@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+  <key>CFBundleExecutable</key><string>Wordbar</string>
+  <key>CFBundleIdentifier</key><string>com.esai.wordbar</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>esai单词</string>
+  <key>CFBundleDisplayName</key><string>esai单词</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.8.1</string>
+  <key>CFBundleVersion</key><string>17</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>SUFeedURL</key><string>https://raw.githubusercontent.com/fitzsmith2000/esai-wordbar/main/updates/appcast-arm64.xml</string>
+  <key>SUPublicEDKey</key><string>6puocRSIi96xWx0NiTF0wriKZA73cOTPFtnaLwKU370=</string>
+  <key>SUEnableAutomaticChecks</key><false/>
+  <key>SUAutomaticallyUpdate</key><false/>
+  <key>SUAllowsAutomaticUpdates</key><true/>
+  <key>SUScheduledCheckInterval</key><integer>3600</integer>
+  <key>SUVerifyUpdateBeforeExtraction</key><true/>
+  <key>SURequireSignedFeed</key><true/>
+  <key>SUSendProfileInfo</key><false/>
+</dict></plist>

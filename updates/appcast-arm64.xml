@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>esai单词 updates (Apple Silicon)</title>
+    <link>https://github.com/fitzsmith2000/esai-wordbar</link>
+    <description>Stable signed updates for esai单词.</description>
+    <item>
+      <title>esai单词 0.8.1</title>
+      <pubDate>Mon, 09 Nov 2026 09:28:28 GMT</pubDate>
+      <sparkle:version>17</sparkle:version>
+      <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description>公开测试版：词书直达入口、低调评分按钮、可选自动更新。</description>
+      <enclosure url="https://github.com/fitzsmith2000/esai-wordbar/releases/download/v0.8.1/esai-wordbar-0.8.1-apple-silicon.zip" length="5206447" type="application/octet-stream" sparkle:edSignature="bksKua0plgNC4tc3NRHF5fyuZm9L1NAntrVcht8WnObH+ZM6RnxQoirWutz2m5fcHso0C9sFfBPniHLN8zQNAg=="></enclosure>
+    </item>
+  </channel>
+</rss><!-- sparkle-signatures:
+edSignature: QwSQis/YhzmsdpmP3NGzQ36bafybRUUrmkX8ElImEcCtJscpSa+hPFopZcDaySp6PDC14qmipSFS641g7w/vBw==
+length: 1316
+-->
