@@ -794,6 +794,15 @@ struct WordHotKey: Codable, Equatable {
             ?? atlas.first { $0.w.lowercased() == word }
     }
 
+    func updateSearchQuery(_ query: String) {
+        if searchQuery != query {
+            searchQuery = query
+            refreshSearch()
+        }
+        if !query.isEmpty { page = "search" }
+        else if page == "search" { page = "study" }
+    }
+
     func refreshSearch() {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else {
@@ -1268,6 +1277,62 @@ private final class WordPanelHostController: NSViewController {
     }
 }
 
+private struct ImmediateSearchField: NSViewRepresentable {
+    let text: String
+    let focusToken: Int
+    let onChange: (String) -> Void
+    let onSubmit: () -> Void
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = "点开后直接输入英文查词"
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = NSFont.systemFont(ofSize: 13)
+        field.delegate = context.coordinator
+        field.sendsSearchStringImmediately = true
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.changed(_:))
+        return field
+    }
+
+    func updateNSView(_ field: NSSearchField, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text {
+            field.stringValue = text
+            (field.currentEditor() as? NSTextView)?.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+        }
+        if focusToken != context.coordinator.lastFocusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var parent: ImmediateSearchField
+        var lastFocusToken = 0
+        init(parent: ImmediateSearchField) { self.parent = parent }
+        @objc func changed(_ field: NSSearchField) {
+            parent.onChange(field.stringValue)
+        }
+        func controlTextDidChange(_ notification: Notification) {
+            if let field = notification.object as? NSSearchField {
+                parent.onChange(field.stringValue)
+            }
+        }
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                parent.onSubmit()
+                return true
+            }
+            return false
+        }
+    }
+}
+
 struct WordPanel: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var colorScheme
@@ -1276,7 +1341,6 @@ struct WordPanel: View {
     @State private var hexError = false
     @State private var settingsTab = CommandLine.arguments.contains("--preview-settings=dictionaries") ? "dictionaries" : "books"
     @State private var bookTab = CommandLine.arguments.contains("--preview-settings=books") ? "discover" : "mine"
-    @FocusState private var searchFocused: Bool
     private var word: WordEntry? { model.current }
     private var accent: Color { model.accentColor }
 
@@ -1323,14 +1387,6 @@ struct WordPanel: View {
                 else { model.loadCollins() }
             }
         }
-        .onChange(of: model.searchFocusToken) { _ in
-            DispatchQueue.main.async { searchFocused = true }
-        }
-        .onChange(of: model.searchQuery) { query in
-            model.refreshSearch()
-            if !query.isEmpty { model.page = "search" }
-            else if model.page == "search" { model.page = "study" }
-        }
     }
 
     private var header: some View {
@@ -1366,21 +1422,13 @@ struct WordPanel: View {
                 }
             }
             if model.page == "study" || model.page == "search" {
-                HStack(spacing: 7) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("点开后直接输入英文查词", text: $model.searchQuery)
-                        .textFieldStyle(.plain).font(.callout)
-                        .focused($searchFocused)
-                        .onSubmit {
-                            if let first = model.searchMatches.first { model.selectSearchWord(first) }
-                        }
-                    if !model.searchQuery.isEmpty {
-                        Button { model.searchQuery = "" } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                        }.buttonStyle(.plain).help("清空查词")
-                    }
+                ImmediateSearchField(text: model.searchQuery, focusToken: model.searchFocusToken) { query in
+                    model.updateSearchQuery(query)
+                } onSubmit: {
+                    if let first = model.searchMatches.first { model.selectSearchWord(first) }
                 }
-                .padding(.horizontal, 9).padding(.vertical, 7)
+                .frame(height: 19)
+                .padding(.horizontal, 8).padding(.vertical, 7)
                 .background(WordSurface.raised, in: RoundedRectangle(cornerRadius: 8))
             }
             if model.page == "study" && word != nil {
@@ -2014,8 +2062,7 @@ struct WordPanel: View {
                 }
             } else if model.page == "search" {
                 WordFooterAction(title: "返回背词", symbol: "chevron.left", destructive: false) {
-                    model.searchQuery = ""
-                    model.page = "study"
+                    model.updateSearchQuery("")
                 }
             } else {
                 Text("esai单词").foregroundStyle(.tertiary)
@@ -2282,7 +2329,7 @@ struct WordPanel: View {
         if popover.isShown { popover.performClose(nil) }
         else {
             applyAppearance()
-            model.searchQuery = ""
+            model.updateSearchQuery("")
             model.page = "study"
             model.revealCurrent()
             NSApp.activate(ignoringOtherApps: true)
@@ -2308,6 +2355,19 @@ struct WordPanel: View {
             guard let self, self.popover.isShown else { return event }
             if event.type == .keyDown {
                 if event.keyCode == 53 { self.popover.performClose(nil); return nil }
+                if ["study", "search"].contains(self.model.page),
+                   event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+                    if event.keyCode == 51 {
+                        self.model.updateSearchQuery(String(self.model.searchQuery.dropLast()))
+                        return nil
+                    }
+                    if let character = event.charactersIgnoringModifiers,
+                       character.count == 1,
+                       character.unicodeScalars.allSatisfy({ CharacterSet.letters.contains($0) || $0 == "-" || $0 == "'" }) {
+                        self.model.updateSearchQuery(self.model.searchQuery + character.lowercased())
+                        return nil
+                    }
+                }
                 return event
             }
             guard let window = self.popover.contentViewController?.view.window else { return event }
