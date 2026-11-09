@@ -6,6 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/fitzsmith2000/esai-wordbar</link>
     <description>Stable signed updates for esai单词.</description>
     <item>
+      <title>esai单词 0.9.1</title>
+      <pubDate>Mon, 09 Nov 2026 15:33:15 GMT</pubDate>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>0.9.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description>修复输入法延迟：打开状态栏面板后，按英文字母即可立即查词；保留柯林斯、ECDICT 与热门考试词书。</description>
+      <enclosure url="https://github.com/fitzsmith2000/esai-wordbar/releases/download/v0.9.1/esai-wordbar-0.9.1-apple-silicon.zip" length="5648627" type="application/octet-stream" sparkle:edSignature="lrD/sieZkyKeBHq4m4lCEqLrvceCVp9g0SVYzIiGR4479mhi7UtYsvxjT6dFKLMwoIdBak3ULPBsgOLifDpVDg=="></enclosure>
+    </item>
+    <item>
       <title>esai单词 0.9.0</title>
       <pubDate>Mon, 09 Nov 2026 15:19:18 GMT</pubDate>
       <sparkle:version>18</sparkle:version>
@@ -25,6 +34,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: 37neXYXE/Ceaz48iBU+SG4k/gcCrWsoQSmiCPNKKBH317vDr3B2jH1hH/a1K020lvkWxKAF0HR2JphndGTqmCA==
-length: 2106
+edSignature: SrTFO1XrpmJI8XnthKO0ZchHA3aArB5bCgb7AanNUl2i9OiLgcbC0MwTbzoepnI380iDLea6x0/qKIZpqAcYBw==
+length: 2881
 -->
