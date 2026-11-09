@@ -203,6 +203,31 @@ private struct FreemdictBook: Identifiable {
     ]
 }
 
+private struct PopularBook: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let filename: String
+    let sha256: String
+    var url: URL { URL(string: "https://raw.githubusercontent.com/grhliu/wordtyper-vocabularies/b5790cafcad1795873410e984c834ef1ddac20ac/vocabularies/\(filename).json")! }
+    static let choices = [
+        PopularBook(id: "popular.cet4", title: "大学英语四级", detail: "CET-4 · 约 3,815 词", filename: "cet4", sha256: "568b5203eb6b48bdecf8deb8d5ad3bc6546b7960c72e9eafcd877242b6b70105"),
+        PopularBook(id: "popular.cet6", title: "大学英语六级", detail: "CET-6 · 约 5,371 词", filename: "cet6", sha256: "216de305c1838b7dd5d473d80e5606838abdc8d2780509893bf623d37ad60dd5"),
+        PopularBook(id: "popular.ielts", title: "雅思高频词汇", detail: "IELTS · 约 4,974 词", filename: "ielts_core", sha256: "faf6705f919ae9a6cd6270bdcf6ce47bab314f8d91a74dae6b6d7bac0c76bf3c"),
+        PopularBook(id: "popular.gre", title: "GRE 词汇", detail: "GRE · 约 7,485 词", filename: "gre", sha256: "2bb3065cb6f47ee3cf12c4ea87abfcdf2ff7f2e11dd184af208bbeec7e355b25"),
+        PopularBook(id: "popular.gmat", title: "GMAT 学术词汇", detail: "GMAT 方向 · 约 2,996 词", filename: "gmat", sha256: "7f77a31a304cf860deb6be4e255c60e856c184627cd2d3a770ca45c4a9c79454")
+    ]
+}
+
+private struct PopularBookFile: Decodable {
+    struct Item: Decodable {
+        let word: String
+        let phonetic: String
+        let translations: [String]
+    }
+    let words: [Item]
+}
+
 struct ReviewState: Codable {
     var interval: Int
     var due: Date
@@ -255,11 +280,13 @@ struct WordHotKey: Codable, Equatable {
 @MainActor final class WordModel: ObservableObject {
     let updates = UpdateService(enabled: !CommandLine.arguments.contains("--preview"))
     @Published private(set) var selectedBookID: String
+    @Published private(set) var selectedDictionaryID: String
     @Published private(set) var queue: [WordEntry] = []
     @Published private(set) var queueIndex = 0
     @Published private(set) var learnedToday = 0
     @Published var revealed = false
     @Published var collinsHTML = ""
+    @Published var definitionText = ""
     @Published var collinsMessage = ""
     @Published var collinsExpanded = true
     @Published var speechMessage = ""
@@ -274,6 +301,12 @@ struct WordHotKey: Codable, Equatable {
     @Published var importMessage = ""
     @Published var downloadBookID: String?
     @Published var downloadMessage = ""
+    @Published var downloadDictionaryID: String?
+    @Published var dictionaryDownloadMessage = ""
+    @Published var searchQuery = ""
+    @Published private(set) var searchMatches: [String] = []
+    @Published private(set) var searchWord = ""
+    @Published var searchFocusToken = 0
     @Published var dailyGoal: Int {
         didSet { UserDefaults.standard.set(dailyGoal, forKey: "dailyGoal"); rebuildQueue() }
     }
@@ -337,6 +370,7 @@ struct WordHotKey: Codable, Equatable {
             .flatMap { try? Data(contentsOf: $0) }
             .flatMap { try? JSONDecoder().decode([WordEntry].self, from: $0) } ?? []
         selectedBookID = UserDefaults.standard.string(forKey: "selectedBookID") ?? "core"
+        selectedDictionaryID = UserDefaults.standard.string(forKey: "selectedDictionaryID") ?? "collins"
         dailyGoal = max(1, UserDefaults.standard.integer(forKey: "dailyGoal") == 0 ? 15 : UserDefaults.standard.integer(forKey: "dailyGoal"))
         autoMinutes = UserDefaults.standard.integer(forKey: "autoMinutes")
         let savedMode = UserDefaults.standard.string(forKey: "appearanceMode") ?? "system"
@@ -345,9 +379,9 @@ struct WordHotKey: Codable, Equatable {
         let savedFontSize = UserDefaults.standard.object(forKey: "statusFontSize") as? Double ?? 14
         statusFontSize = (9...18).contains(savedFontSize) ? savedFontSize : 14
         let savedPanelFontSize = UserDefaults.standard.object(forKey: "panelWordFontSize") as? Double ?? 25
-        let compactFontSize = savedPanelFontSize == 25 && !UserDefaults.standard.bool(forKey: "compactPanelWordMigrated")
-            ? 21 : savedPanelFontSize
-        panelWordFontSize = (18...40).contains(compactFontSize) ? compactFontSize : 21
+        let compactFontSize = [21, 25].contains(savedPanelFontSize) && !UserDefaults.standard.bool(forKey: "compactPanelWordV2Migrated")
+            ? 14 : savedPanelFontSize
+        panelWordFontSize = (12...30).contains(compactFontSize) ? compactFontSize : 14
         accentHex = AccentRGB(hex: UserDefaults.standard.string(forKey: "accentHex") ?? "")?.hex ?? "#0A8552"
         nextShortcut = UserDefaults.standard.data(forKey: "nextShortcut").flatMap { try? JSONDecoder().decode(WordHotKey.self, from: $0) } ?? .next
         previousShortcut = UserDefaults.standard.data(forKey: "previousShortcut").flatMap { try? JSONDecoder().decode(WordHotKey.self, from: $0) } ?? .previous
@@ -366,8 +400,14 @@ struct WordHotKey: Codable, Equatable {
                 withIntermediateDirectories: true)
             try? FileManager.default.copyItem(at: bundledCollins, to: personalCollins)
         }
+        if !["book", "collins", "ecdict.zh", "ecdict.en"].contains(selectedDictionaryID)
+            || (selectedDictionaryID == "collins" && !FileManager.default.fileExists(atPath: personalCollins.path))
+            || (selectedDictionaryID.hasPrefix("ecdict.") && !FileManager.default.fileExists(atPath: storage.appendingPathComponent("dictionaries/ecdict.sqlite").path)) {
+            selectedDictionaryID = "book"
+        }
         UserDefaults.standard.set(panelWordFontSize, forKey: "panelWordFontSize")
         UserDefaults.standard.set(true, forKey: "compactPanelWordMigrated")
+        UserDefaults.standard.set(true, forKey: "compactPanelWordV2Migrated")
         rebuildQueue()
     }
 
@@ -378,7 +418,7 @@ struct WordHotKey: Codable, Equatable {
             ("listening", "听力场景", "生活、校园、工作与出行", builtInWords["listening"]!.count),
             ("speaking", "口语写作", "话题表达与观点论述", builtInWords["speaking"]!.count)
         ] + customBooks.map { ($0.id, $0.title,
-            $0.id.hasPrefix("freemdict.") ? "FreeMdict 下载" : "自定义词书", $0.words.count) }
+            $0.id.hasPrefix("freemdict.") ? "FreeMdict 下载" : $0.id.hasPrefix("popular.") ? "热门考试词书" : "自定义词书", $0.words.count) }
     }
 
     func downloaded(_ id: String) -> Bool { customBooks.contains { $0.id == id } }
@@ -483,6 +523,53 @@ struct WordHotKey: Codable, Equatable {
         }
     }
 
+    fileprivate func downloadBook(_ choice: PopularBook) {
+        guard downloadBookID == nil else { return }
+        downloadBookID = choice.id
+        downloadMessage = "正在下载 \(choice.title)…"
+        Task {
+            do {
+                let book = try await Task.detached(priority: .userInitiated) { () throws -> CustomBook in
+                    let (source, response) = try await URLSession.shared.download(from: choice.url)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                        throw NSError(domain: "esai-wordbar", code: 1, userInfo: [NSLocalizedDescriptionKey: "词书下载失败，请稍后重试。"])
+                    }
+                    let data = try Data(contentsOf: source)
+                    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    guard digest == choice.sha256 else {
+                        throw NSError(domain: "esai-wordbar", code: 2, userInfo: [NSLocalizedDescriptionKey: "下载文件与已验证版本不同，暂未导入。"])
+                    }
+                    let decoded = try JSONDecoder().decode(PopularBookFile.self, from: data)
+                    let words = decoded.words.compactMap { item -> WordEntry? in
+                        let headword = item.word.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !headword.isEmpty, !item.translations.isEmpty else { return nil }
+                        let senses = item.translations.map { translation -> WordSense in
+                            let parts = translation.split(separator: " ", maxSplits: 1).map(String.init)
+                            return WordSense(pos: parts.count == 2 && parts[0].hasSuffix(".") ? parts[0] : "",
+                                zh: parts.count == 2 && parts[0].hasSuffix(".") ? parts[1] : translation, en: "")
+                        }
+                        return WordEntry(w: headword, uk: item.phonetic, us: item.phonetic,
+                            senses: senses, ex: [], col: [], fam: [], syn: [], ant: [], tip: "", cefr: "",
+                            topic: "popular", note: "", id: "\(choice.id).\(headword.lowercased())")
+                    }
+                    guard words.count >= 100 else {
+                        throw NSError(domain: "esai-wordbar", code: 3, userInfo: [NSLocalizedDescriptionKey: "词书内容不足，暂未导入。"])
+                    }
+                    return CustomBook(id: choice.id, title: choice.title, words: words)
+                }.value
+                customBooks.removeAll { $0.id == choice.id }
+                customBooks.append(book)
+                persist(customBooks, to: "custom-books.json")
+                downloadMessage = "已导入 \(book.words.count) 个单词，开始学习。"
+                selectBook(book.id)
+                page = "study"
+            } catch {
+                downloadMessage = "下载失败：\(error.localizedDescription)"
+            }
+            downloadBookID = nil
+        }
+    }
+
     var current: WordEntry? { queue.indices.contains(queueIndex) ? queue[queueIndex] : nil }
     var atlasCount: Int { atlas.count }
     var bookTitle: String {
@@ -559,6 +646,7 @@ struct WordHotKey: Codable, Equatable {
         queueIndex = min(queueIndex, max(0, queue.count - 1))
         revealed = false
         collinsHTML = ""
+        definitionText = ""
         collinsMessage = ""
         collinsExpanded = true
         speechMessage = ""
@@ -571,6 +659,7 @@ struct WordHotKey: Codable, Equatable {
         queueIndex = (queueIndex + direction + queue.count) % queue.count
         revealed = keepDefinitionVisible
         collinsHTML = ""
+        definitionText = ""
         collinsMessage = ""
         collinsExpanded = true
         speechMessage = ""
@@ -671,6 +760,138 @@ struct WordHotKey: Codable, Equatable {
             ?? URL(fileURLWithPath: "/Library/Application Support/esai-wordbar/dictionaries/collins.sqlite")
     }
     var collinsReady: Bool { FileManager.default.fileExists(atPath: collinsURL.path) }
+    var dictionaryFolderURL: URL { storage.appendingPathComponent("dictionaries", isDirectory: true) }
+    var ecdictURL: URL { storage.appendingPathComponent("dictionaries/ecdict.sqlite") }
+    var ecdictReady: Bool { FileManager.default.fileExists(atPath: ecdictURL.path) }
+    var dictionaryTitle: String {
+        switch selectedDictionaryID {
+        case "collins": "柯林斯 COBUILD"
+        case "ecdict.zh": "ECDICT 英汉"
+        case "ecdict.en": "ECDICT 英英"
+        default: "词书自带释义"
+        }
+    }
+
+    func selectDictionary(_ id: String) {
+        guard id == "book" || (id == "collins" && collinsReady) || (id.hasPrefix("ecdict.") && ecdictReady) else { return }
+        selectedDictionaryID = id
+        UserDefaults.standard.set(id, forKey: "selectedDictionaryID")
+        collinsHTML = ""
+        definitionText = ""
+        collinsMessage = ""
+        if revealed { loadCollins() }
+    }
+
+    private var searchDictionaryID: String {
+        if selectedDictionaryID != "book" { return selectedDictionaryID }
+        if ecdictReady { return "ecdict.zh" }
+        return collinsReady ? "collins" : "book"
+    }
+
+    var searchEntry: WordEntry? {
+        let word = searchWord.lowercased()
+        return words(for: selectedBookID).first { $0.w.lowercased() == word }
+            ?? atlas.first { $0.w.lowercased() == word }
+    }
+
+    func refreshSearch() {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else {
+            searchMatches = []
+            searchWord = ""
+            return
+        }
+        let prefix = String(query.prefix(60))
+        let local = (words(for: selectedBookID) + atlas)
+            .filter { $0.w.lowercased().hasPrefix(prefix.lowercased()) }
+            .prefix(12).map(\.w)
+        var dictionaryWords: [String] = []
+        if searchDictionaryID != "book" {
+            var database: OpaquePointer?
+            let file = searchDictionaryID == "collins" ? collinsURL : ecdictURL
+            if sqlite3_open_v2(file.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
+                var statement: OpaquePointer?
+                if sqlite3_prepare_v2(database, "SELECT word FROM entries WHERE word LIKE ? ORDER BY word LIMIT 12", -1, &statement, nil) == SQLITE_OK {
+                    sqlite3_bind_text(statement, 1, prefix + "%", -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+                    while sqlite3_step(statement) == SQLITE_ROW {
+                        if let value = sqlite3_column_text(statement, 0) { dictionaryWords.append(String(cString: value)) }
+                    }
+                }
+                sqlite3_finalize(statement)
+            }
+            sqlite3_close(database)
+        }
+        searchMatches = Array(Set(local + dictionaryWords))
+            .sorted { lhs, rhs in
+                if lhs.lowercased() == prefix.lowercased() { return true }
+                if rhs.lowercased() == prefix.lowercased() { return false }
+                return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+            }
+            .prefix(10).map { $0 }
+        searchWord = ""
+        if let exact = searchMatches.first(where: { $0.caseInsensitiveCompare(prefix) == .orderedSame }) {
+            selectSearchWord(exact)
+        }
+    }
+
+    func selectSearchWord(_ word: String) {
+        searchWord = word
+        loadCollins(word)
+    }
+
+    func downloadDictionary(_ id: String) {
+        guard downloadDictionaryID == nil, ["collins", "ecdict"].contains(id) else { return }
+        downloadDictionaryID = id
+        dictionaryDownloadMessage = id == "collins" ? "正在下载柯林斯词典（约 50 MB）…" : "正在下载 ECDICT（约 66 MB）…"
+        Task {
+            do {
+                let folder = storage.appendingPathComponent("dictionaries", isDirectory: true)
+                let filename = id == "collins" ? "collins.sqlite" : "ecdict.sqlite"
+                let url = id == "collins"
+                    ? URL(string: "https://downloads.freemdict.com/uploads/tempertemper%27s%20collection/MD~/Collins/Collin%20Cobuild%20OH/CollinsCOBUILDOverhaul%20V%202-30.mdx")!
+                    : URL(string: "https://raw.githubusercontent.com/skywind3000/ECDICT/39cfb9672c0906b63569e0453c2e6abfb9ab182a/ecdict.csv")!
+                let expectedHash = id == "collins"
+                    ? "2300431a0a1b748248fe8382b2917e550dbb0563c0ab6a60c1a563db71a7dafa"
+                    : "d1ecbdf9ee2b920afb6f430ca6b6bb9f559588cf0dff86e04bd255f9390843cc"
+                try await Task.detached(priority: .userInitiated) {
+                    let (source, response) = try await URLSession.shared.download(from: url)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                        throw NSError(domain: "esai-wordbar", code: 1, userInfo: [NSLocalizedDescriptionKey: "下载站没有返回词典文件。"])
+                    }
+                    let digest = SHA256.hash(data: try Data(contentsOf: source))
+                        .map { String(format: "%02x", $0) }.joined()
+                    guard digest == expectedHash else {
+                        throw NSError(domain: "esai-wordbar", code: 2, userInfo: [NSLocalizedDescriptionKey: "下载文件与已验证版本不同，暂未导入。"])
+                    }
+                    let temporary = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("esai-dictionary-\(UUID().uuidString).sqlite")
+                    defer { try? FileManager.default.removeItem(at: temporary) }
+                    let process = Process()
+                    process.executableURL = Bundle.main.executableURL?.deletingLastPathComponent()
+                        .appendingPathComponent("esai-mdx-importer")
+                    process.arguments = [id == "collins" ? "--collins" : "--ecdict", source.path, temporary.path]
+                    process.standardOutput = Pipe()
+                    process.standardError = Pipe()
+                    try process.run()
+                    process.waitUntilExit()
+                    let attributes = try? FileManager.default.attributesOfItem(atPath: temporary.path)
+                    guard process.terminationStatus == 0,
+                          (attributes?[.size] as? NSNumber)?.intValue ?? 0 > 1_000_000 else {
+                        throw NSError(domain: "esai-wordbar", code: 3, userInfo: [NSLocalizedDescriptionKey: "词典转换失败，请稍后重试。"])
+                    }
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    let destination = folder.appendingPathComponent(filename)
+                    if FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.removeItem(at: destination) }
+                    try FileManager.default.moveItem(at: temporary, to: destination)
+                }.value
+                selectDictionary(id == "collins" ? "collins" : "ecdict.zh")
+                dictionaryDownloadMessage = "已安装 \(dictionaryTitle)，现在可以离线使用。"
+            } catch {
+                dictionaryDownloadMessage = "下载失败：\(error.localizedDescription)"
+            }
+            downloadDictionaryID = nil
+        }
+    }
 
     func setShortcut(_ shortcut: WordHotKey, action: Int) {
         let choices = [nextShortcut, previousShortcut, meaningShortcut, forgotShortcut, uncertainShortcut, knownShortcut]
@@ -704,35 +925,43 @@ struct WordHotKey: Codable, Equatable {
         }
     }
 
-    func loadCollins() {
-        guard let word = current else { return }
-        guard collinsReady else { collinsMessage = "本机未找到柯林斯释义文件。请到设置 → 通用中查看。"; return }
+    func loadCollins(_ searchedWord: String? = nil) {
+        guard let word = searchedWord ?? current?.w else { return }
+        collinsHTML = ""
+        definitionText = ""
+        collinsMessage = ""
+        let source = searchedWord == nil ? selectedDictionaryID : searchDictionaryID
+        guard source != "book" else { return }
+        let isCollins = source == "collins"
+        guard isCollins ? collinsReady : ecdictReady else {
+            collinsMessage = "释义库尚未安装，请到设置 → 释义下载。"
+            return
+        }
         var database: OpaquePointer?
-        guard sqlite3_open_v2(collinsURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            collinsMessage = "无法打开本地柯林斯词库。"; return
+        guard sqlite3_open_v2((isCollins ? collinsURL : ecdictURL).path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            collinsMessage = "无法打开本地释义库。"; return
         }
         defer { sqlite3_close(database) }
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, "SELECT html FROM entries WHERE word = ? LIMIT 1", -1, &statement, nil) == SQLITE_OK else {
+        let column = isCollins ? "html" : source == "ecdict.zh" ? "zh" : "en"
+        guard sqlite3_prepare_v2(database, "SELECT \(column) FROM entries WHERE word = ? LIMIT 1", -1, &statement, nil) == SQLITE_OK else {
             collinsMessage = "本地词库查询失败。"; return
         }
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, word.w, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        sqlite3_bind_text(statement, 1, word, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
         if sqlite3_step(statement) == SQLITE_ROW, let bytes = sqlite3_column_text(statement, 0) {
-            collinsHTML = String(cString: bytes)
-            collinsMessage = ""
+            if isCollins { collinsHTML = String(cString: bytes) }
+            else { definitionText = String(cString: bytes) }
+            if collinsHTML.isEmpty && definitionText.isEmpty { collinsMessage = "这本释义库没有收录 \(word)。" }
             collinsExpanded = true
         } else {
-            collinsHTML = ""
-            collinsMessage = "这本柯林斯词典没有收录 \(word.w)。"
+            collinsMessage = "这本释义库没有收录 \(word)。"
         }
     }
 
     func openDictionaryFolder() {
-        let folder = collinsReady ? collinsURL.deletingLastPathComponent()
-            : storage.appendingPathComponent("dictionaries", isDirectory: true)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(folder)
+        try? FileManager.default.createDirectory(at: dictionaryFolderURL, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(dictionaryFolderURL)
     }
 
     private func persist<T: Encodable>(_ value: T, to name: String) {
@@ -1045,8 +1274,9 @@ struct WordPanel: View {
     @ObservedObject var model: WordModel
     @State private var customHex = ""
     @State private var hexError = false
-    @State private var settingsTab = "books"
-    @State private var bookTab = "mine"
+    @State private var settingsTab = CommandLine.arguments.contains("--preview-settings=dictionaries") ? "dictionaries" : "books"
+    @State private var bookTab = CommandLine.arguments.contains("--preview-settings=books") ? "discover" : "mine"
+    @FocusState private var searchFocused: Bool
     private var word: WordEntry? { model.current }
     private var accent: Color { model.accentColor }
 
@@ -1060,6 +1290,7 @@ struct WordPanel: View {
             ScrollView {
                 Group {
                     if model.page == "study" { study }
+                    else if model.page == "search" { search }
                     else { settingsContent }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1087,14 +1318,25 @@ struct WordPanel: View {
         .tint(accent)
         .preferredColorScheme(model.appearanceMode == "dark" ? .dark : model.appearanceMode == "light" ? .light : nil)
         .onChange(of: model.page) { page in
-            if page == "study" && !model.revealed { model.revealCurrent() }
+            if page == "study" {
+                if !model.revealed { model.revealCurrent() }
+                else { model.loadCollins() }
+            }
+        }
+        .onChange(of: model.searchFocusToken) { _ in
+            DispatchQueue.main.async { searchFocused = true }
+        }
+        .onChange(of: model.searchQuery) { query in
+            model.refreshSearch()
+            if !query.isEmpty { model.page = "search" }
+            else if model.page == "search" { model.page = "study" }
         }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                if model.page == "study" {
+                if model.page == "study" || model.page == "search" {
                     if let image = Bundle.main.url(forResource: "EsaiStatusTemplate", withExtension: "pdf")
                         .flatMap(NSImage.init(contentsOf:)) {
                         Image(nsImage: image).resizable().renderingMode(.template)
@@ -1102,16 +1344,18 @@ struct WordPanel: View {
                     }
                     Text("esai单词").font(.title3.weight(.semibold))
                     Spacer(minLength: 8)
-                    Button {
-                        settingsTab = "books"
-                        bookTab = "mine"
-                        model.page = "settings"
-                    } label: {
-                        Text(model.bookTitle).font(.caption.weight(.medium)).lineLimit(1)
-                            .padding(.horizontal, 9).padding(.vertical, 5)
-                            .background(WordSurface.raised, in: RoundedRectangle(cornerRadius: 6))
+                    if model.page == "study" {
+                        Button {
+                            settingsTab = "books"
+                            bookTab = "mine"
+                            model.page = "settings"
+                        } label: {
+                            Text(model.bookTitle).font(.caption.weight(.medium)).lineLimit(1)
+                                .padding(.horizontal, 9).padding(.vertical, 5)
+                                .background(WordSurface.raised, in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain).help("选择词书")
                     }
-                    .buttonStyle(.plain).help("选择词书")
                 } else {
                     Button { model.page = "study" } label: {
                         Label("返回", systemImage: "chevron.left")
@@ -1120,6 +1364,24 @@ struct WordPanel: View {
                     Text("设置").font(.title3.weight(.semibold))
                     Spacer()
                 }
+            }
+            if model.page == "study" || model.page == "search" {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("点开后直接输入英文查词", text: $model.searchQuery)
+                        .textFieldStyle(.plain).font(.callout)
+                        .focused($searchFocused)
+                        .onSubmit {
+                            if let first = model.searchMatches.first { model.selectSearchWord(first) }
+                        }
+                    if !model.searchQuery.isEmpty {
+                        Button { model.searchQuery = "" } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }.buttonStyle(.plain).help("清空查词")
+                    }
+                }
+                .padding(.horizontal, 9).padding(.vertical, 7)
+                .background(WordSurface.raised, in: RoundedRectangle(cornerRadius: 8))
             }
             if model.page == "study" && word != nil {
                 HStack(spacing: 7) {
@@ -1149,7 +1411,7 @@ struct WordPanel: View {
             if let word {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack(alignment: .firstTextBaseline) {
-                        Text(word.w).font(.system(size: model.panelWordFontSize, weight: .semibold, design: .rounded))
+                        Text(word.w).font(.system(size: model.panelWordFontSize, weight: .medium))
                             .minimumScaleFactor(0.75).lineLimit(1)
                         Spacer()
                         Button { model.speakCurrent() } label: {
@@ -1196,24 +1458,55 @@ struct WordPanel: View {
                     .padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .wordCard(raised: false)
                 } else {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack {
-                            Text("常用释义").font(.headline)
-                            Spacer()
-                            Text("\(word.senses.count) 条")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        ForEach(Array(word.senses.enumerated()), id: \.offset) { _, sense in
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(sense.pos.isEmpty ? "释义" : sense.pos)
-                                        .font(.caption.weight(.semibold)).foregroundStyle(accent)
-                                        .frame(width: 34, alignment: .leading)
-                                    Text(sense.zh).font(.callout.weight(.medium))
+                    if model.selectedDictionaryID != "book" {
+                        VStack(alignment: .leading, spacing: 9) {
+                            HStack {
+                                Text(model.dictionaryTitle).font(.headline)
+                                Text("本地").font(.caption.weight(.medium)).foregroundStyle(accent)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(accent.opacity(0.1), in: Capsule())
+                                Spacer()
+                                Button(model.collinsExpanded ? "收起" : "展开") { model.collinsExpanded.toggle() }
+                                    .buttonStyle(.plain).foregroundStyle(accent)
+                            }
+                            if !model.collinsMessage.isEmpty {
+                                Text(model.collinsMessage).font(.caption).foregroundStyle(.secondary)
+                            }
+                            if model.collinsExpanded {
+                                if !model.collinsHTML.isEmpty {
+                                    CollinsEntryView(html: model.collinsHTML,
+                                        accentHex: AccentRGB(hex: model.accentHex)!.readable(onDark: colorScheme == .dark).hex,
+                                        dark: colorScheme == .dark).frame(height: 200)
                                 }
-                                if !sense.en.isEmpty {
-                                    Text(sense.en).font(.caption).foregroundStyle(.secondary)
-                                        .padding(.leading, 42)
+                                if !model.definitionText.isEmpty {
+                                    Text(model.definitionText).font(.callout).textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                        }
+                        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .wordCard(raised: false)
+                    }
+                    VStack(alignment: .leading, spacing: 14) {
+                        if model.selectedDictionaryID == "book" || (!model.collinsMessage.isEmpty && model.collinsHTML.isEmpty && model.definitionText.isEmpty) {
+                            HStack {
+                                Text("词书释义").font(.headline)
+                                Spacer()
+                                Text("\(word.senses.count) 条")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            ForEach(Array(word.senses.enumerated()), id: \.offset) { _, sense in
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                        Text(sense.pos.isEmpty ? "释义" : sense.pos)
+                                            .font(.caption.weight(.semibold)).foregroundStyle(accent)
+                                            .frame(width: 34, alignment: .leading)
+                                        Text(sense.zh).font(.callout.weight(.medium))
+                                    }
+                                    if !sense.en.isEmpty {
+                                        Text(sense.en).font(.caption).foregroundStyle(.secondary)
+                                            .padding(.leading, 42)
+                                    }
                                 }
                             }
                         }
@@ -1238,33 +1531,6 @@ struct WordPanel: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack {
-                            Text("柯林斯补充释义").font(.headline)
-                            Text("本地").font(.caption.weight(.medium)).foregroundStyle(accent)
-                                .padding(.horizontal, 6).padding(.vertical, 2)
-                                .background(accent.opacity(0.1), in: Capsule())
-                            Spacer()
-                            Button(model.collinsHTML.isEmpty ? "查看" : model.collinsExpanded ? "收起" : "展开") {
-                                if model.collinsHTML.isEmpty { model.loadCollins() }
-                                else { model.collinsExpanded.toggle() }
-                            }.buttonStyle(.plain).foregroundStyle(accent)
-                        }
-                        if !model.collinsMessage.isEmpty {
-                            Text(model.collinsMessage).font(.caption).foregroundStyle(.secondary)
-                        }
-                        if !model.collinsHTML.isEmpty && model.collinsExpanded {
-                            CollinsEntryView(html: model.collinsHTML,
-                                accentHex: AccentRGB(hex: model.accentHex)!.readable(onDark: colorScheme == .dark).hex,
-                                dark: colorScheme == .dark).frame(height: 200)
-                        }
-                        if let url = URL(string: "https://www.collinsdictionary.com/dictionary/english/\(word.w.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? word.w)") {
-                            Link("在柯林斯官网打开 ↗", destination: url).font(.caption)
-                        }
-                    }
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .wordCard(raised: false)
-
                 }
             } else {
                 VStack(alignment: .leading, spacing: 12) {
@@ -1276,6 +1542,55 @@ struct WordPanel: View {
                         .buttonStyle(.borderedProminent)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 25)
             }
+        }
+    }
+
+    private var search: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !model.searchWord.isEmpty {
+                VStack(alignment: .leading, spacing: 9) {
+                    Text(model.searchWord).font(.system(size: model.panelWordFontSize, weight: .medium))
+                    if let entry = model.searchEntry, !entry.uk.isEmpty {
+                        Text("英 \(entry.uk)  美 \(entry.us)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !model.collinsHTML.isEmpty {
+                        CollinsEntryView(html: model.collinsHTML,
+                            accentHex: AccentRGB(hex: model.accentHex)!.readable(onDark: colorScheme == .dark).hex,
+                            dark: colorScheme == .dark).frame(height: 230)
+                    } else if !model.definitionText.isEmpty {
+                        Text(model.definitionText).font(.callout).textSelection(.enabled)
+                    } else if let entry = model.searchEntry {
+                        ForEach(Array(entry.senses.enumerated()), id: \.offset) { _, sense in
+                            Text("\(sense.pos) \(sense.zh)").font(.callout).textSelection(.enabled)
+                        }
+                    } else {
+                        Text("当前释义库没有收录这个词。")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .wordCard(raised: false)
+            }
+            if !model.searchMatches.isEmpty {
+                Text(model.searchWord.isEmpty ? "匹配的单词" : "相近词")
+                    .font(.headline)
+                ForEach(model.searchMatches.filter { $0 != model.searchWord }.prefix(8), id: \.self) { match in
+                    Button { model.selectSearchWord(match) } label: {
+                        HStack {
+                            Text(match).font(.callout)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(10).wordCard(raised: false)
+                    }.buttonStyle(.plain)
+                }
+            } else if model.searchWord.isEmpty {
+                Text("没有找到匹配的词，试试完整拼写。")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Text("查词不会改变正在背的单词或复习记录。")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -1321,6 +1636,34 @@ struct WordPanel: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 4) {
+                    Text("热门考试").font(.headline)
+                    Text("按公开词表整理；并非考试机构官方词表。下载后可离线背诵。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(PopularBook.choices) { choice in
+                    HStack(spacing: 10) {
+                        Image(systemName: model.downloaded(choice.id) ? "checkmark.circle.fill" : "arrow.down.book.closed")
+                            .foregroundStyle(accent).frame(width: 22)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(choice.title).font(.callout.weight(.semibold))
+                            Text(choice.detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 4)
+                        Button(model.downloaded(choice.id) ? "开始学习" : model.downloadBookID == choice.id ? "下载中" : "下载并开始") {
+                            if model.downloaded(choice.id) {
+                                model.selectBook(choice.id)
+                                model.page = "study"
+                            } else { model.downloadBook(choice) }
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(model.downloadBookID != nil)
+                    }
+                    .padding(11).wordCard(raised: false)
+                }
+                Link("查看热门考试词表来源 ↗", destination: URL(string: "https://github.com/grhliu/wordtyper-vocabularies")!)
+                    .font(.caption)
+                WordSurface.hairline.frame(height: 1)
+                VStack(alignment: .leading, spacing: 4) {
                     Text("FreeMdict 精选").font(.headline)
                     Text("点击下载并开始，即可自动导入；以后无需联网。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -1357,6 +1700,94 @@ struct WordPanel: View {
         }
     }
 
+    private var dictionaries: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("选择背词时显示的释义。切换释义不会改变词书或学习进度。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("当前释义").font(.caption).foregroundStyle(.secondary)
+                    Text(model.dictionaryTitle).font(.callout.weight(.semibold))
+                }
+                Spacer()
+                Image(systemName: "text.book.closed").foregroundStyle(accent)
+            }
+            .padding(12).frame(maxWidth: .infinity, alignment: .leading).wordCard(raised: true)
+            Text("已可使用").font(.headline)
+            ForEach([("book", "词书自带释义", "无需下载 · 跟随当前词书"),
+                ("collins", "柯林斯 COBUILD", "英汉双解 · 本地词典"),
+                ("ecdict.zh", "ECDICT 英汉", "中文释义 · 本地词典"),
+                ("ecdict.en", "ECDICT 英英", "英文释义 · 本地词典")], id: \.0) { choice in
+                let (id, title, detail) = choice
+                if id == "book" || (id == "collins" && model.collinsReady) || (id.hasPrefix("ecdict.") && model.ecdictReady) {
+                    Button { model.selectDictionary(id) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: model.selectedDictionaryID == id ? "checkmark.circle.fill" : "text.book.closed")
+                                .foregroundStyle(model.selectedDictionaryID == id ? accent : Color.secondary)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(title).font(.callout.weight(.semibold))
+                                Text(detail).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if model.selectedDictionaryID == id {
+                                Text("使用中").font(.caption).foregroundStyle(accent)
+                            }
+                        }
+                        .padding(11).wordCard(raised: model.selectedDictionaryID == id)
+                    }.buttonStyle(.plain)
+                }
+            }
+            WordSurface.hairline.frame(height: 1)
+            Text("下载更多释义").font(.headline)
+            if !model.collinsReady {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.book.closed").foregroundStyle(accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Text("柯林斯 COBUILD").font(.callout.weight(.semibold))
+                            Text("推荐").font(.caption2.weight(.semibold)).foregroundStyle(accent)
+                        }
+                        Text("来自 FreeMdict · 约 50 MB · 下载后本机转换")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Button(model.downloadDictionaryID == "collins" ? "下载中" : "下载并使用") { model.downloadDictionary("collins") }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(model.downloadDictionaryID != nil)
+                }.padding(11).wordCard(raised: false)
+            }
+            if !model.ecdictReady {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.book.closed").foregroundStyle(accent)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("ECDICT 英汉 + 英英").font(.callout.weight(.semibold))
+                        Text("一次下载，两种释义 · 约 66 MB · MIT 开源")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Button(model.downloadDictionaryID == "ecdict" ? "下载中" : "下载") { model.downloadDictionary("ecdict") }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(model.downloadDictionaryID != nil)
+                }.padding(11).wordCard(raised: false)
+            }
+            if model.downloadDictionaryID != nil { ProgressView().controlSize(.small) }
+            if !model.dictionaryDownloadMessage.isEmpty {
+                Text(model.dictionaryDownloadMessage).font(.caption)
+                    .foregroundStyle(model.dictionaryDownloadMessage.hasPrefix("下载失败") ? Color.orange : Color.secondary)
+            }
+            Link("查看 FreeMdict 来源 ↗", destination: URL(string: "https://downloads.freemdict.com/")!)
+                .font(.caption)
+            Link("查看 ECDICT 来源 ↗", destination: URL(string: "https://github.com/skywind3000/ECDICT")!)
+                .font(.caption)
+            DisclosureGroup("本地释义文件") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(model.dictionaryFolderURL.path).font(.caption).foregroundStyle(.tertiary).textSelection(.enabled)
+                    Button("在访达中查看") { model.openDictionaryFolder() }.buttonStyle(.bordered)
+                }.padding(.top, 8)
+            }.font(.callout.weight(.medium))
+        }
+    }
+
     private func bookRow(_ book: (id: String, title: String, detail: String, count: Int)) -> some View {
         Button {
             if model.selectedBookID != book.id { model.selectBook(book.id) }
@@ -1382,6 +1813,7 @@ struct WordPanel: View {
     private var settingsTabs: some View {
         WordSegments(selection: $settingsTab, options: [
             SegmentChoice(id: "books", title: "词书"),
+            SegmentChoice(id: "dictionaries", title: "释义"),
             SegmentChoice(id: "learning", title: "学习"),
             SegmentChoice(id: "shortcuts", title: "快捷键"),
             SegmentChoice(id: "appearance", title: "外观"),
@@ -1393,6 +1825,7 @@ struct WordPanel: View {
         VStack(alignment: .leading, spacing: 18) {
             Group {
                 if settingsTab == "books" { books }
+                else if settingsTab == "dictionaries" { dictionaries }
                 else if settingsTab == "appearance" { appearanceSettings }
                 else if settingsTab == "learning" { learningSettings }
                 else if settingsTab == "shortcuts" { shortcutSettings }
@@ -1430,13 +1863,13 @@ struct WordPanel: View {
                 HStack {
                     Text("面板单词").font(.headline)
                     Spacer()
-                    Button("恢复默认") { model.panelWordFontSize = 21 }
+                    Button("恢复默认") { model.panelWordFontSize = 14 }
                         .font(.caption).buttonStyle(.plain).foregroundStyle(accent)
-                        .disabled(model.panelWordFontSize == 21)
+                        .disabled(model.panelWordFontSize == 14)
                 }
                 HStack {
                     Text("字号").font(.callout).frame(width: 38, alignment: .leading)
-                    Slider(value: $model.panelWordFontSize, in: 18...40, step: 1)
+                    Slider(value: $model.panelWordFontSize, in: 12...30, step: 1)
                         .accessibilityLabel("面板单词字号")
                     Text(String(format: "%.0f pt", model.panelWordFontSize))
                         .font(.system(.caption, design: .monospaced))
@@ -1570,23 +2003,6 @@ struct WordPanel: View {
     private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 18) {
             UpdateControls(service: model.updates)
-            WordSurface.hairline.frame(height: 1)
-            DisclosureGroup("柯林斯释义文件") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(model.collinsReady ? "本地文件已就绪" : "未找到本地文件",
-                        systemImage: model.collinsReady ? "checkmark.circle.fill" : "exclamationmark.circle")
-                        .foregroundStyle(model.collinsReady ? accent : Color.orange)
-                    Text("学习面板中的柯林斯释义来自这个文件；它不参与出词和复习。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text(model.collinsURL.path).font(.caption).foregroundStyle(.tertiary)
-                        .textSelection(.enabled)
-                    Button("在访达中查看") { model.openDictionaryFolder() }.buttonStyle(.bordered)
-                }
-                .padding(.top, 8)
-            }
-            .font(.callout.weight(.medium))
-            .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-            .wordCard(raised: false)
         }
     }
 
@@ -1595,6 +2011,11 @@ struct WordPanel: View {
             if model.page == "study" {
                 WordFooterAction(title: "设置", symbol: "slider.horizontal.3", destructive: false) {
                     model.page = "settings"
+                }
+            } else if model.page == "search" {
+                WordFooterAction(title: "返回背词", symbol: "chevron.left", destructive: false) {
+                    model.searchQuery = ""
+                    model.page = "study"
                 }
             } else {
                 Text("esai单词").foregroundStyle(.tertiary)
@@ -1638,6 +2059,12 @@ struct WordPanel: View {
             NSApp.setActivationPolicy(.regular)
             applyAppearance()
             model.revealCurrent()
+            if CommandLine.arguments.contains(where: { $0.hasPrefix("--preview-settings=") }) { model.page = "settings" }
+            if let query = CommandLine.arguments.first(where: { $0.hasPrefix("--preview-search=") })?.split(separator: "=", maxSplits: 1).last {
+                model.searchQuery = String(query)
+                model.refreshSearch()
+                model.page = "search"
+            }
             let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 400, height: 560),
                 styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
             window.title = "esai单词 — 预览"
@@ -1728,7 +2155,7 @@ struct WordPanel: View {
             exit(english != chinese && restored && statusItem.button?.image == nil
                 && englishWidth == chineseWidth && chineseWidth == nextWidth ? 0 : 2)
         }
-        if CommandLine.arguments.contains("--focus-check") {
+        if CommandLine.arguments.contains("--focus-check") || CommandLine.arguments.contains("--search-focus-check") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.togglePopover()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -1736,8 +2163,11 @@ struct WordPanel: View {
                     let key = self?.popover.contentViewController?.view.window?.isKeyWindow == true
                     let shown = self?.popover.isShown == true
                     let revealed = self?.model.revealed == true
-                    print("FOCUS_CHECK active=\(active) key=\(key) shown=\(shown) revealed=\(revealed)")
-                    exit(active && key && shown && revealed ? 0 : 2)
+                    let responder = self?.popover.contentViewController?.view.window?.firstResponder
+                    let searchFocused = responder is NSTextView
+                    print("FOCUS_CHECK active=\(active) key=\(key) shown=\(shown) revealed=\(revealed) search=\(searchFocused) responder=\(responder.map { String(describing: type(of: $0)) } ?? "none")")
+                    exit(active && key && shown && revealed
+                        && (!CommandLine.arguments.contains("--search-focus-check") || searchFocused) ? 0 : 2)
                 }
             }
         } else if CommandLine.arguments.contains("--show-panel") {
@@ -1852,12 +2282,16 @@ struct WordPanel: View {
         if popover.isShown { popover.performClose(nil) }
         else {
             applyAppearance()
+            model.searchQuery = ""
             model.page = "study"
             model.revealCurrent()
             NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             focusPanel()
-            DispatchQueue.main.async { [weak self] in self?.focusPanel() }
+            DispatchQueue.main.async { [weak self] in
+                self?.focusPanel()
+                self?.model.searchFocusToken += 1
+            }
         }
     }
 
@@ -1904,6 +2338,7 @@ struct WordPanel: View {
     static func main() {
         if CommandLine.arguments.contains("--dictionary-check") {
             let model = WordModel()
+            model.selectDictionary("collins")
             model.loadCollins()
             print("DICTIONARY_CHECK ready=\(model.collinsReady) word=\(model.current?.w ?? "none") html=\(model.collinsHTML.count)")
             guard model.collinsReady, !model.collinsHTML.isEmpty else { exit(1) }
@@ -1917,6 +2352,16 @@ struct WordPanel: View {
         }
         if CommandLine.arguments.contains(where: { $0.hasPrefix("--download-check") }) {
             let model = WordModel()
+            if let choice = PopularBook.choices.first(where: { CommandLine.arguments.contains("--download-check=\($0.id)") }) {
+                model.downloadBook(choice)
+                let deadline = Date().addingTimeInterval(90)
+                while model.downloadBookID != nil && Date() < deadline {
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                }
+                print("DOWNLOAD_CHECK \(model.downloadMessage) selected=\(model.bookTitle) meaning=\(model.current?.senses.first?.zh ?? "none")")
+                guard model.downloaded(choice.id), model.current?.senses.first?.zh.isEmpty == false else { exit(1) }
+                return
+            }
             let choice = FreemdictBook.choices.first(where: {
                 CommandLine.arguments.contains("--download-check=\($0.id)")
             }) ?? FreemdictBook.choices[0]
@@ -1929,6 +2374,27 @@ struct WordPanel: View {
             guard model.downloaded(choice.id),
                   !model.downloadMessage.hasPrefix("下载失败"),
                   model.current?.senses.first?.zh.isEmpty == false else { exit(1) }
+            return
+        }
+        if CommandLine.arguments.contains("--dictionary-download-check=ecdict") {
+            let model = WordModel()
+            model.downloadDictionary("ecdict")
+            let deadline = Date().addingTimeInterval(180)
+            while model.downloadDictionaryID != nil && Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+            }
+            model.loadCollins()
+            print("DICTIONARY_DOWNLOAD_CHECK \(model.dictionaryDownloadMessage) ready=\(model.ecdictReady) selected=\(model.dictionaryTitle) text=\(model.definitionText.prefix(80))")
+            guard model.ecdictReady, !model.definitionText.isEmpty else { exit(1) }
+            return
+        }
+        if CommandLine.arguments.contains("--search-check") {
+            let model = WordModel()
+            model.searchQuery = "academic"
+            let started = CFAbsoluteTimeGetCurrent()
+            model.refreshSearch()
+            print("SEARCH_CHECK matches=\(model.searchMatches.prefix(5)) selected=\(model.searchWord) definition=\(model.definitionText.prefix(60)) elapsed_ms=\(Int((CFAbsoluteTimeGetCurrent() - started) * 1000))")
+            guard model.searchWord == "academic", !model.definitionText.isEmpty || !model.collinsHTML.isEmpty else { exit(1) }
             return
         }
         let app = NSApplication.shared

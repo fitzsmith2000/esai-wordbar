@@ -8,4 +8,8 @@ The built-in vocabulary and examples come from [Word Atlas](https://github.com/d
 
 The optional in-app wordbook importer uses [mdictlib](https://github.com/lonelam/mdictlib) (MIT License) and its dependencies to read MDX files. Wordbooks shown in the download channel are fetched directly from [FreeMdict](https://downloads.freemdict.com/) on demand; their contents are not included in the installer. Each source retains its own authorship and rights.
 
+The optional CET-4, CET-6, IELTS, GRE and GMAT wordbooks are fetched on demand from [wordtyper-vocabularies](https://github.com/grhliu/wordtyper-vocabularies), released under the MIT License. They are derived from ECDICT exam tags; the upstream [notice](https://github.com/grhliu/wordtyper-vocabularies/blob/main/NOTICE.md) explains that these are not official examination lists.
+
+The optional Chinese and English definition database is fetched on demand from [ECDICT](https://github.com/skywind3000/ECDICT), released under the MIT License. The app converts the CSV to a local SQLite database. The optional Collins MDX is fetched by the user from [FreeMdict](https://downloads.freemdict.com/) and converted locally; it is not included in public installers or update archives. Dictionary conversion also uses the MIT-licensed `csv`, `kuchiki` and `rusqlite` Rust crates.
+
 Update checks and installation use [Sparkle 2.10.1](https://github.com/sparkle-project/Sparkle/releases/tag/2.10.1), under the MIT license, with copyright retained by its authors and contributors. The complete upstream license is included in `Contents/Resources/Licenses/Sparkle.txt`. The update integration follows the approach in [esai 定时关闭](https://github.com/fitzsmith2000/esai).
