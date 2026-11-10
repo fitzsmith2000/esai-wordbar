@@ -996,7 +996,7 @@ private struct CollinsEntryView: NSViewRepresentable {
         view.loadHTMLString("""
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <style>body{font:13px -apple-system,BlinkMacSystemFont,sans-serif;line-height:1.5;color:\(dark ? "#e7eee9" : "#26352d");margin:10px;background:transparent}
-        .collins_en_cn{padding:10px 0;border-top:1px solid \(dark ? "#526359" : "#e2e9e4")}.num,.st{color:\(accentHex);font-weight:700;margin-right:5px}.def_cn{display:block;color:\(accentHex);margin:4px 0}.collins_content ul{padding-left:18px}.collins_content li{margin:8px 0}.collins_content li p{margin:2px 0}.chinese-text{color:\(accentHex)}a{color:\(accentHex)}</style>
+        .collins_en_cn{padding:10px 0;border-top:1px solid \(dark ? "#526359" : "#e2e9e4")}.num,.st{color:\(dark ? "#bcc8c0" : "#4c5650");font-weight:600;margin-right:5px}.def_cn{display:block;color:\(accentHex);margin:4px 0}.collins_content ul{padding-left:18px}.collins_content li{margin:8px 0}.collins_content li p{margin:2px 0}.chinese-text{color:\(accentHex)}a{color:\(accentHex)}</style>
         \(html)
         """, baseURL: nil)
     }
@@ -1285,7 +1285,8 @@ private struct ImmediateSearchField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
-        field.placeholderString = "点开后直接输入英文查词"
+        field.placeholderString = ""
+        field.setAccessibilityLabel("查词")
         field.isBezeled = false
         field.drawsBackground = false
         field.focusRingType = .none
@@ -1401,6 +1402,21 @@ struct WordPanel: View {
                     Text("esai单词").font(.title3.weight(.semibold))
                     Spacer(minLength: 8)
                     if model.page == "study" {
+                        ImmediateSearchField(text: model.searchQuery, focusToken: model.searchFocusToken) { query in
+                            model.updateSearchQuery(query)
+                        } onSubmit: {
+                            if let first = model.searchMatches.first { model.selectSearchWord(first) }
+                        }
+                        .frame(width: 28, height: 22)
+                        .overlay {
+                            Button {
+                                model.page = "search"
+                                model.searchFocusToken += 1
+                            } label: {
+                                Color.clear.frame(width: 28, height: 28)
+                            }
+                            .buttonStyle(.plain).help("查词")
+                        }
                         Button {
                             settingsTab = "books"
                             bookTab = "mine"
@@ -1421,7 +1437,7 @@ struct WordPanel: View {
                     Spacer()
                 }
             }
-            if model.page == "study" || model.page == "search" {
+            if model.page == "search" {
                 ImmediateSearchField(text: model.searchQuery, focusToken: model.searchFocusToken) { query in
                     model.updateSearchQuery(query)
                 } onSubmit: {
@@ -1633,7 +1649,7 @@ struct WordPanel: View {
                         .padding(10).wordCard(raised: false)
                     }.buttonStyle(.plain)
                 }
-            } else if model.searchWord.isEmpty {
+            } else if model.searchWord.isEmpty && !model.searchQuery.isEmpty {
                 Text("没有找到匹配的词，试试完整拼写。")
                     .font(.callout).foregroundStyle(.secondary)
             }
