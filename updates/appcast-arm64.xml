@@ -6,6 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/fitzsmith2000/esai-wordbar</link>
     <description>Stable signed updates for esai单词.</description>
     <item>
+      <title>esai单词 0.9.2</title>
+      <pubDate>Tue, 10 Nov 2026 01:53:09 GMT</pubDate>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>0.9.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description>搜索入口收成放大镜；柯林斯词性的颜色改为中性色。</description>
+      <enclosure url="https://github.com/fitzsmith2000/esai-wordbar/releases/download/v0.9.2/esai-wordbar-0.9.2-apple-silicon.zip" length="5651807" type="application/octet-stream" sparkle:edSignature="U+TrXCdsJ8ccoMb43nU3dUqq2vtycO7oQDKfodXI8VYbTUBWH8YqapM3XGW0jKXF1HkFDfyC5Xsg2brhpjyfCg=="></enclosure>
+    </item>
+    <item>
       <title>esai单词 0.9.1</title>
       <pubDate>Mon, 09 Nov 2026 15:33:15 GMT</pubDate>
       <sparkle:version>19</sparkle:version>
@@ -34,6 +43,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: SrTFO1XrpmJI8XnthKO0ZchHA3aArB5bCgb7AanNUl2i9OiLgcbC0MwTbzoepnI380iDLea6x0/qKIZpqAcYBw==
-length: 2881
+edSignature: hW89wqpLJFkS/GWeS9nzYvgj3uY9w1njaEz5UQa6WH3DsjHhKXbxuVX/3gntuXH0n29M68y7orx+TPG0O5zZAg==
+length: 3592
 -->
