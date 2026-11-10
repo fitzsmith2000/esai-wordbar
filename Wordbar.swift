@@ -123,6 +123,57 @@ private enum PanelKeyPolicy {
     }
 }
 
+/// Menu-bar status item: size to the current word (clamped), and when the meaning
+/// hotkey is held, fill that same width with as much of the gloss as will fit.
+private enum StatusItemLayout {
+    static let minLength: CGFloat = 150
+    static let maxLength: CGFloat = 230
+    static let horizontalPadding: CGFloat = 16
+    static let titlePrefix = "  "
+    static let ellipsis = "…"
+
+    static func font(size: Double) -> NSFont {
+        NSFont.systemFont(ofSize: CGFloat(size), weight: .medium)
+    }
+
+    static func measure(_ text: String, font: NSFont) -> CGFloat {
+        ceil((text as NSString).size(withAttributes: [.font: font]).width)
+    }
+
+    static func itemLength(forTitle title: String, font: NSFont) -> CGFloat {
+        max(minLength, min(maxLength, measure(title, font: font) + horizontalPadding))
+    }
+
+    static func availableTextWidth(itemLength: CGFloat) -> CGFloat {
+        max(0, itemLength - horizontalPadding)
+    }
+
+    /// Join non-empty Chinese glosses; do not pre-cut on ；/、 — truncation is width-based only.
+    static func meaningSource(senses: [WordSense]) -> String {
+        senses.map { $0.zh.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: "；")
+    }
+
+    /// Prefix + text, with a typographic ellipsis only if the full string cannot fit in `itemLength`.
+    static func fittingTitle(_ text: String, itemLength: CGFloat, font: NSFont) -> String {
+        let width = availableTextWidth(itemLength: itemLength)
+        let full = titlePrefix + text
+        if measure(full, font: font) <= width { return full }
+        var lo = 0, hi = text.count, best = 0
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            let candidate = titlePrefix + String(text.prefix(mid)) + ellipsis
+            if measure(candidate, font: font) <= width {
+                best = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        if best == 0 { return titlePrefix + ellipsis }
+        return titlePrefix + String(text.prefix(best)) + ellipsis
+    }
+}
+
 
 private struct WordCardSurface: ViewModifier {
     let raised: Bool
@@ -2034,7 +2085,7 @@ struct WordPanel: View {
                         .font(.system(.caption, design: .monospaced))
                         .frame(width: 48, alignment: .trailing)
                 }
-                Text("即时应用到菜单栏单词；较长的单词会按需加宽。")
+                Text("即时应用到菜单栏单词；较长的单词会按需加宽。按住释义快捷键时，会在当前状态栏宽度内尽量显示完整词义，放不下才省略。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(12).frame(maxWidth: .infinity, alignment: .leading)
@@ -2384,16 +2435,17 @@ struct WordPanel: View {
 
     private func updateStatus() {
         guard let statusItem, let button = statusItem.button else { return }
-        let title = model.current.map { word in
-            let meaning = word.senses.first?.zh.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let shortMeaning = meaning.components(separatedBy: CharacterSet(charactersIn: "；;、")).first ?? meaning
-            let display = showingStatusMeaning && !shortMeaning.isEmpty
-                ? String(shortMeaning.prefix(8)) + (shortMeaning.count > 8 ? "…" : "") : word.w
-            return "  \(display)"
-        } ?? "  今日完成"
-        button.title = title
-        statusItem.length = max(150, min(230, ceil((title as NSString).size(
-            withAttributes: [.font: button.font ?? NSFont.systemFont(ofSize: CGFloat(model.statusFontSize))]).width) + 16))
+        let font = StatusItemLayout.font(size: model.statusFontSize)
+        button.font = font
+        let wordTitle = model.current.map { StatusItemLayout.titlePrefix + $0.w } ?? (StatusItemLayout.titlePrefix + "今日完成")
+        let length = StatusItemLayout.itemLength(forTitle: wordTitle, font: font)
+        statusItem.length = length
+        if showingStatusMeaning, let word = model.current {
+            let meaning = StatusItemLayout.meaningSource(senses: word.senses)
+            button.title = meaning.isEmpty ? wordTitle : StatusItemLayout.fittingTitle(meaning, itemLength: length, font: font)
+        } else {
+            button.title = wordTitle
+        }
         button.toolTip = model.current.map { "\($0.w) · \($0.senses.first?.zh ?? "") · \(model.bookTitle)" } ?? "今天的单词已完成"
     }
 
@@ -2621,6 +2673,142 @@ struct WordPanel: View {
     }
 }
 
+
+private enum StatusItemLayoutTests {
+    static func run() -> Bool {
+        let font = StatusItemLayout.font(size: 14)
+        guard StatusItemLayout.itemLength(forTitle: StatusItemLayout.titlePrefix + "a", font: font) == StatusItemLayout.minLength else { return false }
+        let longWord = StatusItemLayout.titlePrefix + String(repeating: "W", count: 80)
+        guard StatusItemLayout.itemLength(forTitle: longWord, font: font) == StatusItemLayout.maxLength else { return false }
+
+        let mid = StatusItemLayout.titlePrefix + "abbreviation"
+        let length = StatusItemLayout.itemLength(forTitle: mid, font: font)
+        guard (150...230).contains(length) else { return false }
+
+        let meaning = "缩写词, 缩写, abbreviation, 略语"
+        let fitted = StatusItemLayout.fittingTitle(meaning, itemLength: length, font: font)
+        let avail = StatusItemLayout.availableTextWidth(itemLength: length)
+        guard StatusItemLayout.measure(fitted, font: font) <= avail + 0.5 else { return false }
+        // Old prefix(8) cut this to "缩写词, 缩写,…" even when the capsule was 150–230 pt wide.
+        let legacy = StatusItemLayout.titlePrefix + String(meaning.prefix(8)) + "…"
+        guard fitted != legacy, fitted.count > legacy.count || !fitted.hasSuffix("…") else { return false }
+        // It must show more than the first 8 characters of the gloss.
+        let body = String(fitted.dropFirst(StatusItemLayout.titlePrefix.count)).trimmingCharacters(in: CharacterSet(charactersIn: StatusItemLayout.ellipsis))
+        guard body.count > 8 else { return false }
+
+        let short = StatusItemLayout.fittingTitle("缩写", itemLength: length, font: font)
+        guard short == StatusItemLayout.titlePrefix + "缩写", !short.contains(StatusItemLayout.ellipsis) else { return false }
+
+        let english = "a very long english gloss that should be width-truncated only when necessary"
+        let englishFitted = StatusItemLayout.fittingTitle(english, itemLength: StatusItemLayout.minLength, font: font)
+        guard StatusItemLayout.measure(englishFitted, font: font) <= StatusItemLayout.availableTextWidth(itemLength: StatusItemLayout.minLength) + 0.5 else { return false }
+        guard englishFitted.hasSuffix(StatusItemLayout.ellipsis) else { return false }
+
+        let joined = StatusItemLayout.meaningSource(senses: [
+            WordSense(pos: "n", zh: "缩写词, 缩写", en: ""),
+            WordSense(pos: "v", zh: "  缩写  ", en: ""),
+            WordSense(pos: "n", zh: "", en: "abbr")
+        ])
+        guard joined == "缩写词, 缩写；缩写" else { return false }
+
+        // Smaller type must be able to show at least as many characters as the largest type in the same width.
+        let longZh = "这是一句相当长的中文释义，用来检查字号变化时不要过早截断，并且要把胶囊宽度用满。"
+        let n9 = StatusItemLayout.fittingTitle(longZh, itemLength: 150, font: StatusItemLayout.font(size: 9))
+        let n14 = StatusItemLayout.fittingTitle(longZh, itemLength: 150, font: StatusItemLayout.font(size: 14))
+        let n18 = StatusItemLayout.fittingTitle(longZh, itemLength: 150, font: StatusItemLayout.font(size: 18))
+        let body9 = String(n9.dropFirst(StatusItemLayout.titlePrefix.count)).replacingOccurrences(of: StatusItemLayout.ellipsis, with: "")
+        let body18 = String(n18.dropFirst(StatusItemLayout.titlePrefix.count)).replacingOccurrences(of: StatusItemLayout.ellipsis, with: "")
+        guard body9.count >= body18.count, StatusItemLayout.measure(n9, font: StatusItemLayout.font(size: 9)) <= 150 - 16 + 0.5 else { return false }
+        guard StatusItemLayout.measure(n14, font: font) <= 150 - 16 + 0.5 else { return false }
+        guard StatusItemLayout.measure(n18, font: StatusItemLayout.font(size: 18)) <= 150 - 16 + 0.5 else { return false }
+
+        // Holding the meaning key must not change the item width (sized from the word).
+        let wordTitle = StatusItemLayout.titlePrefix + "abbreviation"
+        let item = StatusItemLayout.itemLength(forTitle: wordTitle, font: font)
+        let held = StatusItemLayout.fittingTitle(meaning, itemLength: item, font: font)
+        guard StatusItemLayout.measure(held, font: font) + StatusItemLayout.horizontalPadding <= item + 0.5 else { return false }
+
+        // Wider items can show more of the same gloss.
+        let narrow = StatusItemLayout.fittingTitle(longZh, itemLength: 150, font: font)
+        let wide = StatusItemLayout.fittingTitle(longZh, itemLength: 230, font: font)
+        let narrowBody = String(narrow.dropFirst(StatusItemLayout.titlePrefix.count)).replacingOccurrences(of: StatusItemLayout.ellipsis, with: "")
+        let wideBody = String(wide.dropFirst(StatusItemLayout.titlePrefix.count)).replacingOccurrences(of: StatusItemLayout.ellipsis, with: "")
+        guard wideBody.count >= narrowBody.count else { return false }
+        return true
+    }
+}
+
+@MainActor private enum StatusItemPreview {
+    static func render(to folder: String) {
+        try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        let app = NSApplication.shared
+        app.setActivationPolicy(.prohibited)
+        let cases: [(name: String, word: String, senses: [WordSense], font: Double)] = [
+            ("abbr-14", "abbreviation", [WordSense(pos: "n", zh: "缩写词, 缩写, abbreviation, 略语", en: "")], 14),
+            ("abbr-9", "abbreviation", [WordSense(pos: "n", zh: "缩写词, 缩写, abbreviation, 略语", en: "")], 9),
+            ("abbr-9.5", "abbreviation", [WordSense(pos: "n", zh: "缩写词, 缩写, 缩短, 节略", en: "")], 9.5),
+            ("abbr-18", "abbreviation", [WordSense(pos: "n", zh: "缩写词, 缩写, abbreviation, 略语", en: "")], 18),
+            ("short-14", "coin", [WordSense(pos: "n", zh: "硬币", en: "")], 14),
+            ("multi-14", "light", [WordSense(pos: "n", zh: "光, 光线", en: ""), WordSense(pos: "adj", zh: "轻的, 浅的", en: "")], 14),
+            ("english-14", "etc", [WordSense(pos: "adv", zh: "and so on; used at the end of a list to show that there are other similar things", en: "")], 14),
+            ("longzh-14", "serendipity", [WordSense(pos: "n", zh: "意外发现珍奇事物的本领；善于发掘新奇事物的运气", en: "")], 14)
+        ]
+        for item in cases {
+            let font = StatusItemLayout.font(size: item.font)
+            let wordTitle = StatusItemLayout.titlePrefix + item.word
+            let length = StatusItemLayout.itemLength(forTitle: wordTitle, font: font)
+            let meaning = StatusItemLayout.meaningSource(senses: item.senses)
+            let fitted = StatusItemLayout.fittingTitle(meaning, itemLength: length, font: font)
+            let first = item.senses.first?.zh ?? ""
+            let short = first.components(separatedBy: CharacterSet(charactersIn: "；;、")).first ?? first
+            let legacy = StatusItemLayout.titlePrefix + (short.count > 8 ? String(short.prefix(8)) + "…" : short)
+            write(folder: folder, name: "before-\(item.name).png", title: legacy, width: length, fontSize: item.font, dark: false, caption: "0.9.3 \(item.word) \(Int(item.font))pt")
+            write(folder: folder, name: "after-\(item.name).png", title: fitted, width: length, fontSize: item.font, dark: false, caption: "0.9.4 \(item.word) \(Int(item.font))pt")
+            write(folder: folder, name: "after-\(item.name)-dark.png", title: fitted, width: length, fontSize: item.font, dark: true, caption: "0.9.4 \(item.word) \(Int(item.font))pt")
+        }
+        print("RENDERED status capsules to \(folder)")
+    }
+
+    private static func write(folder: String, name: String, title: String, width: CGFloat, fontSize: Double, dark: Bool, caption: String) {
+        let bar = Color(white: dark ? 0.11 : 0.86)
+        let textColor = Color(white: dark ? 0.92 : 0.08)
+        let capsule = Color(white: dark ? 0.22 : 0.97)
+        let view = VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "clock").font(.system(size: 13, weight: .medium)).foregroundStyle(textColor.opacity(0.75))
+                Text(title)
+                    .font(.system(size: fontSize, weight: .medium))
+                    .foregroundStyle(textColor)
+                    .lineLimit(1)
+                    .frame(width: width - 8, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .frame(width: width, height: 24)
+                    .background(Capsule().fill(capsule))
+                Image(systemName: "plus.magnifyingglass").font(.system(size: 13, weight: .medium)).foregroundStyle(textColor.opacity(0.75))
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .background(bar)
+            Text(caption)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Color(white: dark ? 0.7 : 0.35))
+        }
+        .padding(.bottom, 6)
+        .padding(.top, 2)
+        .background(Color(white: dark ? 0.08 : 0.94))
+        .environment(\.colorScheme, dark ? .dark : .light)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        guard let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+            fatalError("status render failed \(name)")
+        }
+        try! png.write(to: URL(fileURLWithPath: "\(folder)/\(name)"))
+        print("RENDERED \(name)")
+    }
+
+}
+
 @main struct WordbarApp {
     static func main() {
         if CommandLine.arguments.contains("--dictionary-check") {
@@ -2669,7 +2857,8 @@ struct WordPanel: View {
             guard model.page == "study", model.searchQuery.isEmpty else {
                 print("SEARCH_RETURN_FAIL"); exit(1)
             }
-            print("SELF_TEST_OK search-nav key-policy metrics query-routing")
+            guard StatusItemLayoutTests.run() else { print("STATUS_FIT_FAIL"); exit(1) }
+            print("SELF_TEST_OK search-nav key-policy metrics query-routing status-fit")
             return
         }
         if CommandLine.arguments.contains(where: { $0.hasPrefix("--download-check") }) {
@@ -2708,6 +2897,11 @@ struct WordPanel: View {
             model.loadCollins()
             print("DICTIONARY_DOWNLOAD_CHECK \(model.dictionaryDownloadMessage) ready=\(model.ecdictReady) selected=\(model.dictionaryTitle) text=\(model.definitionText.prefix(80))")
             guard model.ecdictReady, !model.definitionText.isEmpty else { exit(1) }
+            return
+        }
+        if let i = CommandLine.arguments.firstIndex(of: "--render-status") {
+            let folder = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : "/tmp/esai-wordbar-status"
+            StatusItemPreview.render(to: folder)
             return
         }
         if CommandLine.arguments.contains("--search-check") {
