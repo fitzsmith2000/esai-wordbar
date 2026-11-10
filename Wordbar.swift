@@ -123,6 +123,26 @@ private enum PanelKeyPolicy {
     }
 }
 
+/// Grade shortcuts apply to the current status-bar word even if the panel has never been opened.
+private enum GradeHotKeyPolicy {
+    static func shouldApply(hasCurrentWord: Bool) -> Bool { hasCurrentWord }
+
+    static func label(forQuality quality: Int) -> String {
+        switch quality {
+        case 0: return "忘了"
+        case 1: return "模糊"
+        case 2: return "认识"
+        default: return ""
+        }
+    }
+
+    static func statusFeedback(forQuality quality: Int) -> String {
+        let label = self.label(forQuality: quality)
+        return label.isEmpty ? "已评分" : "已记：\(label)"
+    }
+}
+
+
 /// Menu-bar status item: size to the current word (clamped), and when the meaning
 /// hotkey is held, fill that same width with as much of the gloss as will fit.
 private enum StatusItemLayout {
@@ -460,10 +480,20 @@ struct WordHotKey: Codable, Equatable {
     private var pendingAccentHex: String?
     private var accentCommitTask: Task<Void, Never>?
     private let speech = NSSpeechSynthesizer()
-    private let storage = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("esai-wordbar", isDirectory: true)
+    private let storage: URL
+    var onGrade: ((Int) -> Void)?
 
-    init() {
+    static var defaultStorage: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("esai-wordbar", isDirectory: true)
+    }
+
+    convenience init() {
+        self.init(storage: WordModel.defaultStorage)
+    }
+
+    init(storage: URL) {
+        self.storage = storage
         atlas = Bundle.main.url(forResource: "word-atlas", withExtension: "json")
             .flatMap { try? Data(contentsOf: $0) }
             .flatMap { try? JSONDecoder().decode([WordEntry].self, from: $0) } ?? []
@@ -492,7 +522,8 @@ struct WordHotKey: Codable, Equatable {
         customBooks = (try? Data(contentsOf: storage.appendingPathComponent("custom-books.json")))
             .flatMap { try? JSONDecoder().decode([CustomBook].self, from: $0) } ?? []
         let personalCollins = storage.appendingPathComponent("dictionaries/collins.sqlite")
-        if !FileManager.default.fileExists(atPath: personalCollins.path),
+        if storage == WordModel.defaultStorage,
+           !FileManager.default.fileExists(atPath: personalCollins.path),
            let bundledCollins = Bundle.main.url(forResource: "collins", withExtension: "sqlite") {
             try? FileManager.default.createDirectory(at: personalCollins.deletingLastPathComponent(),
                 withIntermediateDirectories: true)
@@ -720,9 +751,9 @@ struct WordHotKey: Codable, Equatable {
         builtInWords[id] ?? customBooks.first(where: { $0.id == id })?.words ?? []
     }
 
-    func selectBook(_ id: String) {
+    func selectBook(_ id: String, persistSelection: Bool = true) {
         selectedBookID = id
-        UserDefaults.standard.set(id, forKey: "selectedBookID")
+        if persistSelection { UserDefaults.standard.set(id, forKey: "selectedBookID") }
         queueIndex = 0
         rebuildQueue()
     }
@@ -785,7 +816,10 @@ struct WordHotKey: Codable, Equatable {
             seen: (previous?.seen ?? 0) + 1, last: .now)
         persist(reviews, to: "reviews.json")
         rebuildQueue()
+        onGrade?(quality)
     }
+
+    func review(forWordID id: String) -> ReviewState? { reviews[id] }
 
     func importBook() {
         let panel = NSOpenPanel()
@@ -2226,7 +2260,7 @@ struct WordPanel: View {
             ShortcutRow(title: "模糊", shortcut: model.uncertainShortcut) { model.setShortcut($0, action: 5) }
             ShortcutRow(title: "认识", shortcut: model.knownShortcut) { model.setShortcut($0, action: 6) }
             if !model.hotKeyMessage.isEmpty { Text(model.hotKeyMessage).font(.caption).foregroundStyle(.orange) }
-            Text("打开面板后可用评分快捷键。点击对应按钮再按新组合；须包含 ⌥、⌃ 或 ⌘。")
+            Text("不必打开面板，评分快捷键会对当前状态栏单词生效。点击对应按钮再按新组合；须包含 ⌥、⌃ 或 ⌘。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -2270,6 +2304,8 @@ struct WordPanel: View {
     private var uncertainHotKey: EventHotKeyRef?
     private var knownHotKey: EventHotKeyRef?
     private var showingStatusMeaning = false
+    private var statusFeedbackTitle: String?
+    private var statusFeedbackTimer: Timer?
     private var timer: Timer?
     private var dayTimer: Timer?
     private var previewWindow: NSWindow?
@@ -2280,6 +2316,7 @@ struct WordPanel: View {
     func applicationDidFinishLaunching(_ notification: Notification) {
         model.onWordChange = { [weak self] in
             guard let self else { return }
+            self.clearGradeFeedback()
             self.updateStatus()
             if (self.previewWindow != nil || self.popover.isShown) && self.model.page == "study" && !self.model.revealed {
                 self.model.revealCurrent()
@@ -2343,6 +2380,7 @@ struct WordPanel: View {
         model.onAppearanceChange = { [weak self] in self?.applyAppearance() }
         model.onHotKeyChange = { [weak self] in self?.registerHotKeys() ?? false }
         model.onStatusFontChange = { [weak self] in self?.applyStatusFont() }
+        model.onGrade = { [weak self] quality in self?.showGradeFeedback(quality) }
         applyAppearance()
         updateStatus()
         scheduleTimer()
@@ -2370,7 +2408,9 @@ struct WordPanel: View {
                     case 1: owner.model.move(1)
                     case 2: owner.model.move(-1)
                     case 4...6:
-                        if owner.model.revealed { owner.model.grade(Int(identifier.id - 4)) }
+                        if GradeHotKeyPolicy.shouldApply(hasCurrentWord: owner.model.current != nil) {
+                            owner.model.grade(Int(identifier.id - 4))
+                        }
                     default: break
                     }
                 }
@@ -2440,13 +2480,33 @@ struct WordPanel: View {
         let wordTitle = model.current.map { StatusItemLayout.titlePrefix + $0.w } ?? (StatusItemLayout.titlePrefix + "今日完成")
         let length = StatusItemLayout.itemLength(forTitle: wordTitle, font: font)
         statusItem.length = length
-        if showingStatusMeaning, let word = model.current {
+        if let feedback = statusFeedbackTitle {
+            button.title = StatusItemLayout.fittingTitle(feedback, itemLength: length, font: font)
+        } else if showingStatusMeaning, let word = model.current {
             let meaning = StatusItemLayout.meaningSource(senses: word.senses)
             button.title = meaning.isEmpty ? wordTitle : StatusItemLayout.fittingTitle(meaning, itemLength: length, font: font)
         } else {
             button.title = wordTitle
         }
         button.toolTip = model.current.map { "\($0.w) · \($0.senses.first?.zh ?? "") · \(model.bookTitle)" } ?? "今天的单词已完成"
+    }
+
+    private func showGradeFeedback(_ quality: Int) {
+        statusFeedbackTimer?.invalidate()
+        statusFeedbackTitle = GradeHotKeyPolicy.statusFeedback(forQuality: quality)
+        updateStatus()
+        statusFeedbackTimer = Timer.scheduledTimer(withTimeInterval: 0.9, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.clearGradeFeedback()
+                self?.updateStatus()
+            }
+        }
+    }
+
+    private func clearGradeFeedback() {
+        statusFeedbackTimer?.invalidate()
+        statusFeedbackTimer = nil
+        statusFeedbackTitle = nil
     }
 
     private func applyStatusFont() {
@@ -2674,6 +2734,39 @@ struct WordPanel: View {
 }
 
 
+@MainActor private enum GradeHotKeyTests {
+    static func run() -> Bool {
+        guard GradeHotKeyPolicy.shouldApply(hasCurrentWord: true),
+              GradeHotKeyPolicy.shouldApply(hasCurrentWord: false) == false,
+              GradeHotKeyPolicy.statusFeedback(forQuality: 0) == "已记：忘了",
+              GradeHotKeyPolicy.statusFeedback(forQuality: 1) == "已记：模糊",
+              GradeHotKeyPolicy.statusFeedback(forQuality: 2) == "已记：认识" else { return false }
+
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("esai-wordbar-grade-test-\(UUID().uuidString)", isDirectory: true)
+        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) } catch { return false }
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let model = WordModel(storage: folder)
+        model.selectBook("core", persistSelection: false)
+        // Panel has never been opened: revealed stays false after a next-word move.
+        guard model.revealed == false, model.current != nil, model.queue.count >= 2 else { return false }
+        let first = model.current!
+        model.move(1)
+        guard model.revealed == false, let word = model.current, word.id != first.id else { return false }
+        model.grade(1)
+        guard let review = model.review(forWordID: word.id), review.seen == 1, review.interval == 1 else { return false }
+        guard FileManager.default.fileExists(atPath: folder.appendingPathComponent("reviews.json").path) else { return false }
+        guard model.current?.id != word.id else { return false }
+        guard model.revealed == false else { return false }
+        if let next = model.current {
+            model.grade(2)
+            guard let known = model.review(forWordID: next.id), known.seen == 1, known.interval == 3 else { return false }
+        }
+        return true
+    }
+}
+
 private enum StatusItemLayoutTests {
     static func run() -> Bool {
         let font = StatusItemLayout.font(size: 14)
@@ -2858,7 +2951,8 @@ private enum StatusItemLayoutTests {
                 print("SEARCH_RETURN_FAIL"); exit(1)
             }
             guard StatusItemLayoutTests.run() else { print("STATUS_FIT_FAIL"); exit(1) }
-            print("SELF_TEST_OK search-nav key-policy metrics query-routing status-fit")
+            guard GradeHotKeyTests.run() else { print("GRADE_HOTKEY_FAIL"); exit(1) }
+            print("SELF_TEST_OK search-nav key-policy metrics query-routing status-fit grade-hotkey")
             return
         }
         if CommandLine.arguments.contains(where: { $0.hasPrefix("--download-check") }) {
