@@ -6,6 +6,15 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <link>https://github.com/fitzsmith2000/esai-wordbar</link>
     <description>Stable signed updates for esai单词.</description>
     <item>
+      <title>esai单词 0.9.3</title>
+      <pubDate>Tue, 10 Nov 2026 04:03:53 GMT</pubDate>
+      <sparkle:version>21</sparkle:version>
+      <sparkle:shortVersionString>0.9.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description>重做查词框：学习页与结果页使用同一条带背景、内边距和清除按钮的输入栏，文字不再与放大镜重叠；Esc 与系统输入法不会误关面板；去掉面板滚动层可能造成的中部模糊带。</description>
+      <enclosure url="https://github.com/fitzsmith2000/esai-wordbar/releases/download/v0.9.3/esai-wordbar-0.9.3-apple-silicon.zip" length="5753939" type="application/octet-stream" sparkle:edSignature="1DzrZlE8kJdG1TJh4k0vYP8TMLj35u1QMgL3F4VAbMJf4Cfg8kSIZTCZHqq/sL46uVfPYsmcQB5v3IjmBfPCCQ=="></enclosure>
+    </item>
+    <item>
       <title>esai单词 0.9.2</title>
       <pubDate>Tue, 10 Nov 2026 01:53:09 GMT</pubDate>
       <sparkle:version>20</sparkle:version>
@@ -43,6 +52,6 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     </item>
   </channel>
 </rss><!-- sparkle-signatures:
-edSignature: hW89wqpLJFkS/GWeS9nzYvgj3uY9w1njaEz5UQa6WH3DsjHhKXbxuVX/3gntuXH0n29M68y7orx+TPG0O5zZAg==
-length: 3592
+edSignature: ZpokjYBmsVGP4r/tdERf54YpSD/JFoxq/Turi7wY7eW/rcTjxW7Ib+t3XaQHmzZsLDEid4XUwX9pL5JC/bm+DQ==
+length: 4466
 -->

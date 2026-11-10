@@ -1,8 +1,10 @@
 import AppKit
 import Carbon
 import CryptoKit
+import ImageIO
 import SQLite3
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 private struct AccentPreset: Identifiable {
@@ -77,6 +79,50 @@ private enum WordSurface {
     })
     static let hairline = Color(nsColor: .separatorColor)
 }
+
+private enum SearchBarMetrics {
+    static let iconWidth: CGFloat = 16
+    static let leadingPadding: CGFloat = 10
+    static let trailingPadding: CGFloat = 8
+    static let iconTextGap: CGFloat = 6
+    static let compactWidth: CGFloat = 156
+    static let compactHeight: CGFloat = 28
+    static let expandedHeight: CGFloat = 32
+    static var textLeadingInset: CGFloat { leadingPadding + iconWidth + iconTextGap }
+
+    static func textDoesNotOverlapIcon(textOriginX: CGFloat) -> Bool {
+        textOriginX >= textLeadingInset
+    }
+}
+
+private enum SearchNavigation {
+    static func page(forQuery query: String, currentPage: String) -> String {
+        if !query.isEmpty { return "search" }
+        if currentPage == "search" { return "study" }
+        return currentPage
+    }
+}
+
+private enum PanelKeyPolicy {
+    enum EscapeAction: Equatable {
+        case passThrough
+        case resignFocus
+        case clearQuery
+        case closePanel
+    }
+
+    static func escapeAction(hasMarkedText: Bool, searchFieldFocused: Bool, queryIsEmpty: Bool) -> EscapeAction {
+        if hasMarkedText { return .passThrough }
+        if searchFieldFocused && !queryIsEmpty { return .clearQuery }
+        if searchFieldFocused { return .resignFocus }
+        return .closePanel
+    }
+
+    static func shouldHijackTypedCharacter(hasMarkedText: Bool, textFieldFocused: Bool) -> Bool {
+        !(hasMarkedText || textFieldFocused)
+    }
+}
+
 
 private struct WordCardSurface: ViewModifier {
     let raised: Bool
@@ -316,10 +362,11 @@ struct WordHotKey: Codable, Equatable {
     @Published var appearanceMode: String {
         didSet {
             guard appearanceMode != oldValue else { return }
-            UserDefaults.standard.set(appearanceMode, forKey: "appearanceMode")
+            if persistAppearance { UserDefaults.standard.set(appearanceMode, forKey: "appearanceMode") }
             onAppearanceChange?()
         }
     }
+    var persistAppearance = true
     @Published var glassBackground: Bool {
         didSet { UserDefaults.standard.set(glassBackground, forKey: "glassBackground") }
     }
@@ -799,8 +846,7 @@ struct WordHotKey: Codable, Equatable {
             searchQuery = query
             refreshSearch()
         }
-        if !query.isEmpty { page = "search" }
-        else if page == "search" { page = "study" }
+        page = SearchNavigation.page(forQuery: query, currentPage: page)
     }
 
     func refreshSearch() {
@@ -1215,28 +1261,46 @@ private final class EsaiScrollChromeProbe: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit { if let styleObserver { NotificationCenter.default.removeObserver(styleObserver) } }
+    override var isOpaque: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); scheduleConfiguration() }
     override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); scheduleConfiguration() }
 
+    private func findScrollView() -> NSScrollView? {
+        if let scroll = enclosingScrollView { return scroll }
+        var view: NSView? = superview
+        while let current = view {
+            if let scroll = current as? NSScrollView { return scroll }
+            view = current.superview
+        }
+        return nil
+    }
+
+    private func configure(_ scroll: NSScrollView) {
+        scroll.scrollerStyle = .overlay
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.backgroundColor = .clear
+        scroll.borderType = .noBorder
+        scroll.hasHorizontalScroller = false
+        scroll.contentView.drawsBackground = false
+        scroll.contentView.backgroundColor = .clear
+        if !(scroll.verticalScroller is EsaiThinOverlayScroller) {
+            let scroller = EsaiThinOverlayScroller()
+            scroller.scrollerStyle = .overlay
+            scroller.controlSize = .small
+            scroll.verticalScroller = scroller
+        }
+    }
+
     func scheduleConfiguration() {
+        if let scroll = findScrollView() { configure(scroll) }
         guard !pending else { return }
         pending = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             pending = false
-            guard let scroll = enclosingScrollView else { return }
-            scroll.scrollerStyle = .overlay
-            scroll.autohidesScrollers = true
-            scroll.drawsBackground = false
-            scroll.contentView.drawsBackground = false
-            scroll.hasHorizontalScroller = false
-            if !(scroll.verticalScroller is EsaiThinOverlayScroller) {
-                let scroller = EsaiThinOverlayScroller()
-                scroller.scrollerStyle = .overlay
-                scroller.controlSize = .small
-                scroll.verticalScroller = scroller
-            }
+            if let scroll = self.findScrollView() { self.configure(scroll) }
         }
     }
 }
@@ -1271,39 +1335,97 @@ private final class WordPanelHostController: NSViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func loadView() {
         view = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
+        view.wantsLayer = true
+        view.layer?.isOpaque = false
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        hosting.wantsLayer = true
+        hosting.layer?.isOpaque = false
+        hosting.layer?.backgroundColor = NSColor.clear.cgColor
         hosting.frame = view.bounds
         hosting.autoresizingMask = [.width, .height]
         view.addSubview(hosting)
     }
 }
 
-private struct ImmediateSearchField: NSViewRepresentable {
+private struct EsaiSearchBar: View {
     let text: String
     let focusToken: Int
+    var placeholder: String = "查词"
     let onChange: (String) -> Void
     let onSubmit: () -> Void
 
-    func makeNSView(context: Context) -> NSSearchField {
-        let field = NSSearchField()
-        field.placeholderString = ""
+    var body: some View {
+        HStack(spacing: SearchBarMetrics.iconTextGap) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: SearchBarMetrics.iconWidth, height: SearchBarMetrics.iconWidth)
+                .accessibilityHidden(true)
+            ImmediateTextField(text: text, focusToken: focusToken, placeholder: placeholder,
+                onChange: onChange, onSubmit: onSubmit)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !text.isEmpty {
+                Button {
+                    onChange("")
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help("清除")
+                .accessibilityLabel("清除")
+            }
+        }
+        .padding(.leading, SearchBarMetrics.leadingPadding)
+        .padding(.trailing, SearchBarMetrics.trailingPadding)
+        .frame(height: SearchBarMetrics.expandedHeight)
+        .background(WordSurface.sunken, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(WordSurface.hairline.opacity(0.55), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("查词")
+    }
+}
+
+private struct ImmediateTextField: NSViewRepresentable {
+    let text: String
+    let focusToken: Int
+    let placeholder: String
+    let onChange: (String) -> Void
+    let onSubmit: () -> Void
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.placeholderString = placeholder
         field.setAccessibilityLabel("查词")
+        field.isBordered = false
         field.isBezeled = false
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = NSFont.systemFont(ofSize: 13)
+        field.textColor = .labelColor
+        field.lineBreakMode = .byTruncatingTail
         field.delegate = context.coordinator
-        field.sendsSearchStringImmediately = true
         field.target = context.coordinator
         field.action = #selector(Coordinator.changed(_:))
         return field
     }
 
-    func updateNSView(_ field: NSSearchField, context: Context) {
+    func updateNSView(_ field: NSTextField, context: Context) {
         context.coordinator.parent = self
-        if field.stringValue != text {
+        let editor = field.currentEditor() as? NSTextView
+        let composing = editor?.hasMarkedText() == true
+        if !composing, field.stringValue != text {
             field.stringValue = text
-            (field.currentEditor() as? NSTextView)?.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            if editor != nil {
+                editor?.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            }
         }
+        if field.placeholderString != placeholder { field.placeholderString = placeholder }
         if focusToken != context.coordinator.lastFocusToken {
             context.coordinator.lastFocusToken = focusToken
             DispatchQueue.main.async { field.window?.makeFirstResponder(field) }
@@ -1312,15 +1434,15 @@ private struct ImmediateSearchField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
-    final class Coordinator: NSObject, NSSearchFieldDelegate {
-        var parent: ImmediateSearchField
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: ImmediateTextField
         var lastFocusToken = 0
-        init(parent: ImmediateSearchField) { self.parent = parent }
-        @objc func changed(_ field: NSSearchField) {
+        init(parent: ImmediateTextField) { self.parent = parent }
+        @objc func changed(_ field: NSTextField) {
             parent.onChange(field.stringValue)
         }
         func controlTextDidChange(_ notification: Notification) {
-            if let field = notification.object as? NSSearchField {
+            if let field = notification.object as? NSTextField {
                 parent.onChange(field.stringValue)
             }
         }
@@ -1330,6 +1452,16 @@ private struct ImmediateSearchField: NSViewRepresentable {
                 return true
             }
             return false
+        }
+    }
+}
+
+private struct ScrollBackgroundClear: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.scrollContentBackground(.hidden)
+        } else {
+            content
         }
     }
 }
@@ -1362,6 +1494,8 @@ struct WordPanel: View {
                 .padding(17)
                 .background(EsaiScrollChrome().allowsHitTesting(false))
             }
+            .modifier(ScrollBackgroundClear())
+            .background(Color.clear)
             .id("\(model.page)-\(settingsTab)-\(model.current?.id ?? "")")
             WordSurface.hairline.frame(height: 1)
             if model.page == "study" && model.revealed && word != nil {
@@ -1402,21 +1536,6 @@ struct WordPanel: View {
                     Text("esai单词").font(.title3.weight(.semibold))
                     Spacer(minLength: 8)
                     if model.page == "study" {
-                        ImmediateSearchField(text: model.searchQuery, focusToken: model.searchFocusToken) { query in
-                            model.updateSearchQuery(query)
-                        } onSubmit: {
-                            if let first = model.searchMatches.first { model.selectSearchWord(first) }
-                        }
-                        .frame(width: 28, height: 22)
-                        .overlay {
-                            Button {
-                                model.page = "search"
-                                model.searchFocusToken += 1
-                            } label: {
-                                Color.clear.frame(width: 28, height: 28)
-                            }
-                            .buttonStyle(.plain).help("查词")
-                        }
                         Button {
                             settingsTab = "books"
                             bookTab = "mine"
@@ -1437,15 +1556,12 @@ struct WordPanel: View {
                     Spacer()
                 }
             }
-            if model.page == "search" {
-                ImmediateSearchField(text: model.searchQuery, focusToken: model.searchFocusToken) { query in
+            if model.page == "study" || model.page == "search" {
+                EsaiSearchBar(text: model.searchQuery, focusToken: model.searchFocusToken) { query in
                     model.updateSearchQuery(query)
                 } onSubmit: {
                     if let first = model.searchMatches.first { model.selectSearchWord(first) }
                 }
-                .frame(height: 19)
-                .padding(.horizontal, 8).padding(.vertical, 7)
-                .background(WordSurface.raised, in: RoundedRectangle(cornerRadius: 8))
             }
             if model.page == "study" && word != nil {
                 HStack(spacing: 7) {
@@ -2118,8 +2234,19 @@ struct WordPanel: View {
                 self.model.revealCurrent()
             }
         }
-        if CommandLine.arguments.contains("--preview") {
-            NSApp.setActivationPolicy(.regular)
+        let snapshotPath = CommandLine.arguments.first(where: { $0.hasPrefix("--snapshot=") })
+            .map { String($0.split(separator: "=", maxSplits: 1).last ?? "") }
+        if CommandLine.arguments.contains("--preview") || snapshotPath != nil {
+            if let appearance = CommandLine.arguments.first(where: { $0.hasPrefix("--preview-appearance=") })
+                .map({ String($0.split(separator: "=", maxSplits: 1).last ?? "") }) {
+                model.persistAppearance = false
+                model.appearanceMode = appearance
+            }
+            if snapshotPath == nil {
+                NSApp.setActivationPolicy(.regular)
+            } else {
+                NSApp.setActivationPolicy(.accessory)
+            }
             applyAppearance()
             model.revealCurrent()
             if CommandLine.arguments.contains(where: { $0.hasPrefix("--preview-settings=") }) { model.page = "settings" }
@@ -2128,14 +2255,18 @@ struct WordPanel: View {
                 model.refreshSearch()
                 model.page = "search"
             }
-            let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 400, height: 560),
-                styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            window.title = "esai单词 — 预览"
-            window.appearance = NSApp.appearance
-            window.contentViewController = WordPanelHostController(model: model)
-            model.onAppearanceChange = { [weak self] in self?.applyAppearance() }
-            window.makeKeyAndOrderFront(nil)
-            previewWindow = window
+            if let snapshotPath, !snapshotPath.isEmpty {
+                openSnapshotWindow(path: snapshotPath)
+            } else {
+                let window = NSWindow(contentRect: NSRect(x: 200, y: 200, width: 400, height: 560),
+                    styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+                window.title = "esai单词 — 预览"
+                window.appearance = NSApp.appearance
+                window.contentViewController = WordPanelHostController(model: model)
+                model.onAppearanceChange = { [weak self] in self?.applyAppearance() }
+                window.makeKeyAndOrderFront(nil)
+                previewWindow = window
+            }
             return
         }
         NSApp.setActivationPolicy(.accessory)
@@ -2304,6 +2435,55 @@ struct WordPanel: View {
         return true
     }
 
+    private func openSnapshotWindow(path: String) {
+        let window = NSWindow(contentRect: NSRect(x: -2800, y: -2800, width: 400, height: 560),
+            styleMask: [.borderless, .fullSizeContentView], backing: .buffered, defer: false)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.level = .statusBar
+        window.collectionBehavior = [.stationary, .ignoresCycle, .transient, .canJoinAllSpaces]
+        window.isReleasedWhenClosed = false
+        window.appearance = NSApp.appearance
+        let effect = NSVisualEffectView(frame: NSRect(origin: .zero, size: NSSize(width: 400, height: 560)))
+        effect.material = .popover
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = 12
+        effect.layer?.masksToBounds = true
+        let host = WordPanelHostController(model: model)
+        host.view.frame = effect.bounds
+        host.view.autoresizingMask = [.width, .height]
+        effect.addSubview(host.view)
+        window.contentView = effect
+        window.orderFrontRegardless()
+        previewWindow = window
+        model.onAppearanceChange = { [weak self] in self?.applyAppearance() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+            WordbarDelegate.writeSnapshot(of: window, to: path)
+            NSApp.terminate(nil)
+        }
+    }
+
+    static func writeSnapshot(of window: NSWindow, to path: String) {
+        let url = URL(fileURLWithPath: path)
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
+            [.boundsIgnoreFraming, .bestResolution])
+        guard let image,
+              let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            FileHandle.standardError.write(Data("SNAPSHOT_FAIL \(path)\n".utf8))
+            return
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        if CGImageDestinationFinalize(destination) {
+            print("SNAPSHOT_OK \(path) \(image.width)x\(image.height)")
+        } else {
+            FileHandle.standardError.write(Data("SNAPSHOT_FAIL write \(path)\n".utf8))
+        }
+    }
+
     private func applyAppearance() {
         let appearance: NSAppearance?
         switch model.appearanceMode {
@@ -2370,9 +2550,27 @@ struct WordPanel: View {
         localPanelMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
             guard let self, self.popover.isShown else { return event }
             if event.type == .keyDown {
-                if event.keyCode == 53 { self.popover.performClose(nil); return nil }
+                if event.keyCode == 53 {
+                    switch PanelKeyPolicy.escapeAction(hasMarkedText: self.fieldEditorHasMarkedText(),
+                        searchFieldFocused: self.isEditingSearchField(),
+                        queryIsEmpty: self.model.searchQuery.isEmpty) {
+                    case .passThrough:
+                        return event
+                    case .clearQuery:
+                        self.model.updateSearchQuery("")
+                        return nil
+                    case .resignFocus:
+                        self.popover.contentViewController?.view.window?.makeFirstResponder(nil)
+                        return nil
+                    case .closePanel:
+                        self.popover.performClose(nil)
+                        return nil
+                    }
+                }
                 if ["study", "search"].contains(self.model.page),
-                   event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+                   event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+                   PanelKeyPolicy.shouldHijackTypedCharacter(hasMarkedText: self.fieldEditorHasMarkedText(),
+                       textFieldFocused: self.isEditingSearchField()) {
                     if event.keyCode == 51 {
                         self.model.updateSearchQuery(String(self.model.searchQuery.dropLast()))
                         return nil
@@ -2381,6 +2579,7 @@ struct WordPanel: View {
                        character.count == 1,
                        character.unicodeScalars.allSatisfy({ CharacterSet.letters.contains($0) || $0 == "-" || $0 == "'" }) {
                         self.model.updateSearchQuery(self.model.searchQuery + character.lowercased())
+                        self.model.searchFocusToken += 1
                         return nil
                     }
                 }
@@ -2403,6 +2602,18 @@ struct WordPanel: View {
 
     func popoverDidClose(_ notification: Notification) { stopPanelMonitors() }
 
+    private func fieldEditorHasMarkedText() -> Bool {
+        (popover.contentViewController?.view.window?.firstResponder as? NSTextView)?.hasMarkedText()
+            ?? (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText()
+            ?? false
+    }
+
+    private func isEditingSearchField() -> Bool {
+        let responder = popover.contentViewController?.view.window?.firstResponder
+            ?? NSApp.keyWindow?.firstResponder
+        return responder is NSTextView || responder is NSTextField
+    }
+
     private func stopPanelMonitors() {
         if let localPanelMonitor { NSEvent.removeMonitor(localPanelMonitor); self.localPanelMonitor = nil }
         if let globalPanelMonitor { NSEvent.removeMonitor(globalPanelMonitor); self.globalPanelMonitor = nil }
@@ -2424,6 +2635,41 @@ struct WordPanel: View {
             let model = WordModel()
             print("atlas=\(model.atlasCount) books=\(model.books.count) queue=\(model.queue.count) first=\(model.current?.w ?? "none")")
             guard model.atlasCount == 7298, model.books.count >= 4, model.current != nil else { exit(1) }
+            guard SearchNavigation.page(forQuery: "coin", currentPage: "study") == "search",
+                  SearchNavigation.page(forQuery: "", currentPage: "search") == "study",
+                  SearchNavigation.page(forQuery: "", currentPage: "study") == "study",
+                  SearchNavigation.page(forQuery: "", currentPage: "settings") == "settings" else {
+                print("SEARCH_NAV_FAIL"); exit(1)
+            }
+            guard PanelKeyPolicy.escapeAction(hasMarkedText: true, searchFieldFocused: true, queryIsEmpty: false) == .passThrough,
+                  PanelKeyPolicy.escapeAction(hasMarkedText: false, searchFieldFocused: true, queryIsEmpty: false) == .clearQuery,
+                  PanelKeyPolicy.escapeAction(hasMarkedText: false, searchFieldFocused: true, queryIsEmpty: true) == .resignFocus,
+                  PanelKeyPolicy.escapeAction(hasMarkedText: false, searchFieldFocused: false, queryIsEmpty: true) == .closePanel,
+                  PanelKeyPolicy.shouldHijackTypedCharacter(hasMarkedText: true, textFieldFocused: false) == false,
+                  PanelKeyPolicy.shouldHijackTypedCharacter(hasMarkedText: false, textFieldFocused: true) == false,
+                  PanelKeyPolicy.shouldHijackTypedCharacter(hasMarkedText: false, textFieldFocused: false) == true else {
+                print("KEY_POLICY_FAIL"); exit(1)
+            }
+            guard SearchBarMetrics.textLeadingInset >= 28,
+                  SearchBarMetrics.textDoesNotOverlapIcon(textOriginX: SearchBarMetrics.textLeadingInset),
+                  SearchBarMetrics.textDoesNotOverlapIcon(textOriginX: 8) == false,
+                  SearchBarMetrics.expandedHeight >= 28 else {
+                print("SEARCH_METRICS_FAIL"); exit(1)
+            }
+            model.updateSearchQuery("coin")
+            guard model.page == "search", !model.searchMatches.isEmpty,
+                  model.searchWord.lowercased().hasPrefix("coin") else {
+                print("SEARCH_COIN_FAIL matches=\(model.searchMatches)"); exit(1)
+            }
+            model.updateSearchQuery("zzzzzzzzzzzz")
+            guard model.searchMatches.isEmpty, model.searchWord.isEmpty, model.page == "search" else {
+                print("SEARCH_EMPTY_FAIL"); exit(1)
+            }
+            model.updateSearchQuery("")
+            guard model.page == "study", model.searchQuery.isEmpty else {
+                print("SEARCH_RETURN_FAIL"); exit(1)
+            }
+            print("SELF_TEST_OK search-nav key-policy metrics query-routing")
             return
         }
         if CommandLine.arguments.contains(where: { $0.hasPrefix("--download-check") }) {
